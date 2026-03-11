@@ -109,4 +109,189 @@ def update_event(event_id: int, **kwargs) -> bool:
     logger.error(f"failed to update event {event_id}: {e}")
     return False
 
+def delete_event(event_id: int) -> Bool:
+    query = "DELETE FROM events WHERE id = ?"
 
+    try:
+        storage.execute_query(query, (event_id), fetch=False)
+        logger.info(f"Deleted Event {event_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete even {event_id}: {e}")
+        return False
+
+def import_ics(filepath: str) -> int:
+    try:
+        from icalendar import Calendar
+    except ImportError:
+        logger.error("icalendar library not installed, cannot import .ics files")
+        return 0
+    
+    try:
+        with open(filepath, 'rb') as f:
+            cal = Calendar.from_ical(f.read)
+
+        count = 0 
+        for component in cal.walk('VEVENT'):
+            title = str(component.get('SUMMARY', 'UNTITLED'))
+            start = component.get('DTSTART').dt 
+            end = component.get('DTEND')
+            notes = str(component.get('DESCRIPTION', ''))
+
+            if hasattr(start, 'date') and not hasattr(start, 'hour'):
+                # all day lolgic
+                start = datetime.combine(start, datetime.min.time()).replace(tzinfo=timezone.utc)
+                all_day = True
+            else:
+                all_day = False
+
+            end_dt = None
+            if end:
+                end_dt = end.dt 
+                if hasattr(end_dt, 'date') and not hasattr(end_dt, 'hour'):
+                    end_dt = datetime.combine(end_dt, datetime.min.time()).replace(tzinfo=timezone.utc)
+
+            create_event(
+                title=title,
+                start_time=start,
+                end_time=end_dt,
+                notes=notes,
+                all_day=all_day
+            )
+            count += 1 
+
+        logger.info(f"Imported {count} events from {filepath}")
+        return count
+    except Exception as e:
+        logger.error(f"Failed to import {filepath}: {e}")
+        return 0 
+
+def export_ics(filepath: str, event_ids: Optional[List[int]] = None) -> bool:
+    try:
+        from icalendar import Calendar, Event as ICalEvent
+    except ImportError:
+        logger.error("icalendar library not installed, cannot export .ics files")
+        return False
+    
+    try:
+        cal = Calendar()
+        cal.add('prodid', '-//PyCalendar//pycalendar//EN')
+        cal.add('version', '2.0')
+
+        if event_ids:
+            events = []
+            for event_id in event_ids:
+                rows = storage.execute_query("SELECT * FROM events WHERE id = ?", (event_id,))
+                events.extend([storage.dict_from_row(row) for row in rows])
+        else:
+            rows = storage.execute_query("SELECT * FROM events ORDER BY start_ts", ())
+            events = [storage.dict_from_row(row) for row in rows]
+
+        for event in events:
+            ical_event = ICalEvent()
+            ical_event.add('summary', event['title'])
+            ical_event.add('dtstart', datetime.fromtimestamp(event['start_ts'], tz=timezone.utc))
+
+            if event['end_ts']:
+                ical_event.add('dtend', datetime.fromtimestamp(event['end_ts'], tz=timezone.utc))
+
+            if event['notes']:
+                ical_event.add('description', event['notes'])
+
+            ical_event.add('dtstamp', datetime.now(timezone.utc))
+            ical_event.add('uid', f"pycalendar-{event['id']}@localhost")
+
+            cal.add_component(ical_event)
+
+        with open(filepath, 'wb') as f:
+            f.write(cal.to_ical())
+
+        logger.info(f"Exported {len(events)} events to {filepath}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to export to {filepath}: {e}")
+        return False
+
+def cli_main():
+    # CLI entry point for event management
+    parser = argparse.ArgumentParser(description="BetterWindowsCalendar CLI")
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+    
+    #parsers
+    add_parser = subparsers.add_subparsers('add', help='Add a new event')
+    add_parser.add_argument('--title', required=True, help='Event title')
+    add_parser.add_argument('--start', required=True, help='Start time (ISO 8601 format)')
+    add_parser.add_argument('--end', help='End time (ISO 8601 format)')
+    add_parser.add_argument('--notes', default='', help='Event notes')
+    add_parser.add_argument('--reminder', type=int, help='Reminder minutes before event')
+    add_parser.add_argument('--all_day', action='store_true', help='All-day event')
+
+    list_parser = subparsers.add_parser('list', help='List upcoming events')
+    list_parser.add_argument('--days', type=int, default=7, help='Number of days to show')
+    list_parser.add_argument('--limit', type=int, default=20, help='Maximum events to show')
+
+    import_parser = subparsers.add_parser('export', help='Export to .ics file')
+    import_parser.add_argument('file', help='Path to .ics file')
+
+    export_parser = subparsers.add_parser('export', help='Export to .ics file')
+    export_parser.add_argument('--output', required=True, help='Output .ics file path')
+
+    delete_parser = subparser.add_parser('delete', help='Delete an event')
+    delete_parser.add_argument('id', type=int, help='Event ID')
+
+    args = parser.parse_args()
+    
+    #init db
+    storage.init_db()
+
+    if args.command == 'add':
+        start_time = datetime.fromisoformat(args.start)
+        end_time = datetime.fromisoformat(args.end) if args.end else None
+
+        event_id = create_event(
+            title=args.title,
+            start_time=start_time,
+            end_time=end_time,
+            notes=args.notes,
+            reminder_minutes=args.reminder,
+            all_day=args.all_day
+        )
+        print(f"Created event {event_id}: {args.title}")
+
+    elif args.command == 'list':
+        events = get_upcoming(limit=args.limit)
+
+        print(f"\nUpcoming Events ({len(events)}):")
+        print("-" * 70)
+
+        for event in events:
+            start_dt = datetime.fromtimestamp(event['start_ts'])
+            preint(f"[{event['id']}] {start_dt.strftime('%Y-%m-%d %H:%M')} - {event['title']}")
+            if event['notes']:
+                print(f"{event['notes']}")
+
+        if not events:
+            print("No upcoming events")
+
+    elif args.command == 'import':
+        coutn = import_ics(args.file)
+        print(f"Imported {count} events from {args.file}")
+
+    elif args.command == 'export':
+        if export_ics(args.output):
+            print(f"Exported events to {args.output}")
+        else:
+            print("Export Failed")
+
+    elif args.command == 'delete':
+        if delete_event(args.id):
+            print(f"Deleted event {args.id}")
+        else:
+            print("Delete failed")
+
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__"
+    cli_main()
