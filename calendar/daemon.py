@@ -13,11 +13,10 @@ logger = logging.getLogger(__name__)
 class NotificationDaemon:
     def __init__(self, check_interval: int = 30):
         self.check_interval = check_interval
-        self.notification_manager = get_notification_manager
+        self.notification_manager = get_notification_manager()
         self.notified_events: Set[int] = set()
         self.running = False
         self.config = load_config()
-
 
     def run(self):
         logger.info("Notification daemon starting...")
@@ -28,35 +27,40 @@ class NotificationDaemon:
             while self.running:
                 self._check_reminders()
                 time.sleep(self.check_interval)
-        except KeyboardInterupt:
+        except KeyboardInterrupt:
             logger.info("Daemon stopped by user")
         except Exception as e:
             logger.error(f"Daemon error: {e}", exc_info=True)
         finally:
             self.running = False
-            logger.info("Notification Daemon stopped")
+            logger.info("Notification daemon stopped")
 
-    def check_reminders(self):
+    def _check_reminders(self):
         try:
             due_events = get_due_reminders(window_seconds=120)
 
             for event in due_events:
-                event_id = event['id']
+                event_id = event["id"]
 
                 if event_id in self.notified_events:
                     continue
 
-                if not self.config.get("notifications", {}).get("desktop_enabled", True):
-                    logger.info(f"Skipping notification for event {event_id} (Desktop notifications disabled)")
+                if not self.config.get("notifications", {}).get(
+                    "desktop_enabled", True
+                ):
+                    logger.info(
+                        f"Skipping notification for event {event_id} (desktop notifications disabled)"
+                    )
                     self.notified_events.add(event_id)
                     continue
-                #format
+
                 from datetime import datetime
-                start_time = datetime.fromtimestamp(event['start_ts'])
+
+                start_time = datetime.fromtimestamp(event["start_ts"])
                 title = f"Reminder: {event['title']}"
                 message = f"Starting {start_time.strftime('%H:%M on %Y-%m-%d')}"
 
-                if event['notes']:
+                if event["notes"]:
                     message += f"\n{event['notes']}"
 
                 success = self.notification_manager.notify(title, message, event)
@@ -71,7 +75,7 @@ class NotificationDaemon:
                     logger.warning(f"Failed to send notification for event {event_id}")
 
         except Exception as e:
-            logger.error(f"error checking reminders: {e}", exc_info=True)
+            logger.error(f"Error checking reminders: {e}", exc_info=True)
 
     def _send_mobile_push(self, event: dict, title: str, message: str):
         mobile_config = self.config.get("mobile_push", {})
@@ -81,8 +85,8 @@ class NotificationDaemon:
 
         webhook_url = mobile_config.get("webhook_url", "")
         if not webhook_url:
-            logger.debug("Mobile push enabled but no weboook URL configured")
-            return 
+            logger.debug("Mobile push enabled but no webhook URL configured")
+            return
 
         try:
             import requests
@@ -90,8 +94,8 @@ class NotificationDaemon:
             payload = {
                 "title": title,
                 "body": message,
-                "event_id": event['id'],
-                "timestamp": event['start_ts']
+                "event_id": event["id"],
+                "timestamp": event["start_ts"],
             }
 
             response = requests.post(webhook_url, json=payload, timeout=5)
@@ -112,5 +116,7 @@ def daemon_main():
     daemon = NotificationDaemon(check_interval=30)
     daemon.run()
 
+
 if __name__ == "__main__":
+    daemon_main()
     daemon_main()

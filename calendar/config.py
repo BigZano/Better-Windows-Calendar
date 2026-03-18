@@ -6,7 +6,7 @@ from platformdirs import user_data_dir
 
 logger = logging.getLogger(__name__)
 
-DEFUALT_CONFIG = {
+DEFAULT_CONFIG = {
     "notifications": {
         "desktop_enabled": True,
         "sound_enabled": True,
@@ -19,13 +19,15 @@ DEFUALT_CONFIG = {
     "ui": {
         "theme": "retro",
         "show_week_numbers": True,
-    }
+    },
 }
+
 
 def get_config_path() -> Path:
     app_dir = Path(user_data_dir("PyCalendar", "PyCalendar"))
     app_dir.mkdir(parents=True, exist_ok=True)
     return app_dir / "config.toml"
+
 
 def load_config() -> Dict[str, Any]:
     config_path = get_config_path()
@@ -43,6 +45,7 @@ def load_config() -> Dict[str, Any]:
         logger.error(f"Failed to load config: {e}, using defaults")
         return DEFAULT_CONFIG.copy()
 
+
 def create_default_config():
     config_path = get_config_path()
 
@@ -50,21 +53,21 @@ def create_default_config():
         logger.info("Config file already exists")
         return
 
-    config_content = """
-        # PyCalendar Configuration File
-        [notifications]
-        desktop_enabled = true
-        sound_enabled = true
-        default_reminder_minutes = 15
+    config_content = """# BWC Configuration File
 
-        [mobile_push]
-        enabled = false
-        webhool_url = ""
+[notifications]
+desktop_enabled = true
+sound_enabled = true
+default_reminder_minutes = 15
 
-        [ui]
-        theme = "retro"
-        show_week_numbers = true
-        """
+[mobile_push]
+enabled = false
+webhook_url = ""
+
+[ui]
+theme = "retro"
+show_week_numbers = true
+"""
 
     with open(config_path, "w") as f:
         f.write(config_content)

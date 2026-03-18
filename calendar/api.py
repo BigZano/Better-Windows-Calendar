@@ -1,19 +1,19 @@
 import argparse
 import time
-import logging 
+import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
-import storage
-from config import load_config
+from . import storage
+from .config import load_config
 
 logger = logging.getLogger(__name__)
 
 
 
 def create_event(
-        title: str, 
+        title: str,
         start_time: datetime,
         end_time: Optional[datetime] = None,
         notes: str = "",
@@ -35,7 +35,7 @@ def create_event(
         default_minutes = config.get("notifications", {}).get("default_reminder_minutes", 15)
         reminder_ts = start_ts - (default_minutes * 60)
 
-    query = """"
+    query = """
         INSERT INTO events (title, start_ts, end_ts, timezone, notes, reminder_ts, created_ts, updated_ts, recurrence_rule, all_day)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
@@ -54,7 +54,7 @@ def create_event(
     return event_id
 
 def get_events(start_ts: int, end_ts: int) -> List[Dict[str, Any]]:
-    query = """"
+    query = """
         SELECT * FROM events
         WHERE start_ts >= ? AND start_ts <= ?
         ORDER BY start_ts ASC
@@ -65,7 +65,7 @@ def get_events(start_ts: int, end_ts: int) -> List[Dict[str, Any]]:
 
 def get_upcoming(limit: int = 10) -> List[Dict[str, Any]]:
     now_ts = int(time.time())
-    query = """"
+    query = """
         SELECT * FROM events
         WHERE start_ts >= ?
         ORDER BY start_ts ASC
@@ -95,29 +95,29 @@ def update_event(event_id: int, **kwargs) -> bool:
         return False
 
     kwargs['updated_ts'] = int(time.time())
-    
-    fields = ", ".join(f"{key} = ?" for key in kwargs.key())
+
+    fields = ", ".join(f"{key} = ?" for key in kwargs.keys())
     values = list(kwargs.values()) + [event_id]
-    
-    query = f"UPDATE events SET {sields} WHERE id = ?"
+
+    query = f"UPDATE events SET {fields} WHERE id = ?"
 
     try:
         storage.execute_query(query, tuple(values), fetch=False)
         logger.info(f"Updated event {event_id}")
         return True
     except Exception as e:
-    logger.error(f"failed to update event {event_id}: {e}")
-    return False
+        logger.error(f"Failed to update event {event_id}: {e}")
+        return False
 
-def delete_event(event_id: int) -> Bool:
+def delete_event(event_id: int) -> bool:
     query = "DELETE FROM events WHERE id = ?"
 
     try:
-        storage.execute_query(query, (event_id), fetch=False)
-        logger.info(f"Deleted Event {event_id}")
+        storage.execute_query(query, (event_id,), fetch=False)
+        logger.info(f"Deleted event {event_id}")
         return True
     except Exception as e:
-        logger.error(f"Failed to delete even {event_id}: {e}")
+        logger.error(f"Failed to delete event {event_id}: {e}")
         return False
 
 def import_ics(filepath: str) -> int:
@@ -126,20 +126,20 @@ def import_ics(filepath: str) -> int:
     except ImportError:
         logger.error("icalendar library not installed, cannot import .ics files")
         return 0
-    
+
     try:
         with open(filepath, 'rb') as f:
-            cal = Calendar.from_ical(f.read)
+            cal = Calendar.from_ical(f.read())
 
-        count = 0 
+        count = 0
         for component in cal.walk('VEVENT'):
-            title = str(component.get('SUMMARY', 'UNTITLED'))
-            start = component.get('DTSTART').dt 
+            title = str(component.get('SUMMARY', 'Untitled'))
+            start = component.get('DTSTART').dt
             end = component.get('DTEND')
             notes = str(component.get('DESCRIPTION', ''))
 
             if hasattr(start, 'date') and not hasattr(start, 'hour'):
-                # all day lolgic
+                # All-day event
                 start = datetime.combine(start, datetime.min.time()).replace(tzinfo=timezone.utc)
                 all_day = True
             else:
@@ -147,7 +147,7 @@ def import_ics(filepath: str) -> int:
 
             end_dt = None
             if end:
-                end_dt = end.dt 
+                end_dt = end.dt
                 if hasattr(end_dt, 'date') and not hasattr(end_dt, 'hour'):
                     end_dt = datetime.combine(end_dt, datetime.min.time()).replace(tzinfo=timezone.utc)
 
@@ -158,13 +158,13 @@ def import_ics(filepath: str) -> int:
                 notes=notes,
                 all_day=all_day
             )
-            count += 1 
+            count += 1
 
         logger.info(f"Imported {count} events from {filepath}")
         return count
     except Exception as e:
         logger.error(f"Failed to import {filepath}: {e}")
-        return 0 
+        return 0
 
 def export_ics(filepath: str, event_ids: Optional[List[int]] = None) -> bool:
     try:
@@ -172,7 +172,7 @@ def export_ics(filepath: str, event_ids: Optional[List[int]] = None) -> bool:
     except ImportError:
         logger.error("icalendar library not installed, cannot export .ics files")
         return False
-    
+
     try:
         cal = Calendar()
         cal.add('prodid', '-//PyCalendar//pycalendar//EN')
@@ -216,32 +216,36 @@ def cli_main():
     # CLI entry point for event management
     parser = argparse.ArgumentParser(description="BetterWindowsCalendar CLI")
     subparsers = parser.add_subparsers(dest='command', help='Commands')
-    
-    #parsers
-    add_parser = subparsers.add_subparsers('add', help='Add a new event')
+
+    # Add command
+    add_parser = subparsers.add_parser('add', help='Add a new event')
     add_parser.add_argument('--title', required=True, help='Event title')
     add_parser.add_argument('--start', required=True, help='Start time (ISO 8601 format)')
     add_parser.add_argument('--end', help='End time (ISO 8601 format)')
     add_parser.add_argument('--notes', default='', help='Event notes')
     add_parser.add_argument('--reminder', type=int, help='Reminder minutes before event')
-    add_parser.add_argument('--all_day', action='store_true', help='All-day event')
+    add_parser.add_argument('--all-day', action='store_true', help='All-day event')
 
+    # List command
     list_parser = subparsers.add_parser('list', help='List upcoming events')
     list_parser.add_argument('--days', type=int, default=7, help='Number of days to show')
     list_parser.add_argument('--limit', type=int, default=20, help='Maximum events to show')
 
-    import_parser = subparsers.add_parser('export', help='Export to .ics file')
+    # Import command
+    import_parser = subparsers.add_parser('import', help='Import from .ics file')
     import_parser.add_argument('file', help='Path to .ics file')
 
+    # Export command
     export_parser = subparsers.add_parser('export', help='Export to .ics file')
     export_parser.add_argument('--output', required=True, help='Output .ics file path')
 
-    delete_parser = subparser.add_parser('delete', help='Delete an event')
+    # Delete command
+    delete_parser = subparsers.add_parser('delete', help='Delete an event')
     delete_parser.add_argument('id', type=int, help='Event ID')
 
     args = parser.parse_args()
-    
-    #init db
+
+    # Initialize database
     storage.init_db()
 
     if args.command == 'add':
@@ -266,22 +270,22 @@ def cli_main():
 
         for event in events:
             start_dt = datetime.fromtimestamp(event['start_ts'])
-            preint(f"[{event['id']}] {start_dt.strftime('%Y-%m-%d %H:%M')} - {event['title']}")
+            print(f"[{event['id']}] {start_dt.strftime('%Y-%m-%d %H:%M')} - {event['title']}")
             if event['notes']:
-                print(f"{event['notes']}")
+                print(f"     {event['notes']}")
 
         if not events:
             print("No upcoming events")
 
     elif args.command == 'import':
-        coutn = import_ics(args.file)
+        count = import_ics(args.file)
         print(f"Imported {count} events from {args.file}")
 
     elif args.command == 'export':
         if export_ics(args.output):
             print(f"Exported events to {args.output}")
         else:
-            print("Export Failed")
+            print("Export failed")
 
     elif args.command == 'delete':
         if delete_event(args.id):
@@ -293,5 +297,5 @@ def cli_main():
         parser.print_help()
 
 
-if __name__ == "__main__"
+if __name__ == "__main__":
     cli_main()
