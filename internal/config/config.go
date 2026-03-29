@@ -17,8 +17,8 @@ type Config struct {
 }
 
 type NotificationsConfig struct {
-	DesktopEnabled        bool `toml:"desktop_enabled"`
-	SoundEnabled          bool `toml:"sound_enabled"`
+	DesktopEnabled         bool `toml:"desktop_enabled"`
+	SoundEnabled           bool `toml:"sound_enabled"`
 	DefaultReminderMinutes int  `toml:"default_reminder_minutes"`
 }
 
@@ -36,8 +36,8 @@ type UIConfig struct {
 func Default() Config {
 	return Config{
 		Notifications: NotificationsConfig{
-			DesktopEnabled:        true,
-			SoundEnabled:          true,
+			DesktopEnabled:         true,
+			SoundEnabled:           true,
 			DefaultReminderMinutes: 15,
 		},
 		MobilePush: MobilePushConfig{
