@@ -13,14 +13,18 @@ import (
 // allowedUpdateFields is the whitelist of column names permitted in UpdateEvent.
 // This prevents SQL column injection via dynamic field names.
 var allowedUpdateFields = map[string]bool{
-	"title":           true,
-	"start_ts":        true,
-	"end_ts":          true,
-	"timezone":        true,
-	"notes":           true,
-	"reminder_ts":     true,
-	"recurrence_rule": true,
-	"all_day":         true,
+	"title":            true,
+	"start_ts":         true,
+	"end_ts":           true,
+	"timezone":         true,
+	"notes":            true,
+	"reminder_ts":      true,
+	"recurrence_rule":  true,
+	"all_day":          true,
+	"calendar_id":      true,
+	"location":         true,
+	"url":              true,
+	"parent_event_id":  true,
 }
 
 // Event mirrors the events table schema.
@@ -36,6 +40,10 @@ type Event struct {
 	UpdatedTS      int64
 	RecurrenceRule sql.NullString
 	AllDay         bool
+	CalendarID     sql.NullInt64
+	Location       sql.NullString
+	URL            sql.NullString
+	ParentEventID  sql.NullInt64
 }
 
 // StartTime returns the event start as a local time.Time.
@@ -53,7 +61,8 @@ func scanEvent(row interface{ Scan(...any) error }) (Event, error) {
 	err := row.Scan(
 		&e.ID, &e.Title, &e.StartTS, &e.EndTS, &e.Timezone,
 		&e.Notes, &e.ReminderTS, &e.CreatedTS, &e.UpdatedTS,
-		&e.RecurrenceRule, &allDay,
+		&e.RecurrenceRule, &allDay, &e.CalendarID, &e.Location, &e.URL,
+		&e.ParentEventID,
 	)
 	if err != nil {
 		return Event{}, err
@@ -64,6 +73,7 @@ func scanEvent(row interface{ Scan(...any) error }) (Event, error) {
 
 // CreateEvent inserts a new event and returns its ID.
 // If reminderMinutes is nil the default from config (15 min) is used.
+// calendarID <= 0 defaults to the built-in local calendar (id=1).
 func CreateEvent(
 	title string,
 	startTime time.Time,
@@ -73,12 +83,19 @@ func CreateEvent(
 	recurrenceRule string,
 	allDay bool,
 	tz string,
+	calendarID int64,
+	location string,
+	url string,
 ) (int64, error) {
 	db, err := openDB()
 	if err != nil {
 		return 0, err
 	}
 	defer db.Close()
+
+	if calendarID <= 0 {
+		calendarID = 1
+	}
 
 	now := time.Now().Unix()
 	startTS := startTime.Unix()
@@ -107,11 +124,23 @@ func CreateEvent(
 		notesVal = sql.NullString{String: notes, Valid: true}
 	}
 
+	var locationVal sql.NullString
+	if location != "" {
+		locationVal = sql.NullString{String: location, Valid: true}
+	}
+
+	var urlVal sql.NullString
+	if url != "" {
+		urlVal = sql.NullString{String: url, Valid: true}
+	}
+
 	res, err := db.Exec(`
 		INSERT INTO events
-			(title, start_ts, end_ts, timezone, notes, reminder_ts, created_ts, updated_ts, recurrence_rule, all_day)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		title, startTS, endTS, tz, notesVal, reminderTS, now, now, rrule, boolToInt(allDay),
+			(title, start_ts, end_ts, timezone, notes, reminder_ts, created_ts, updated_ts,
+			 recurrence_rule, all_day, calendar_id, location, url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		title, startTS, endTS, tz, notesVal, reminderTS, now, now,
+		rrule, boolToInt(allDay), calendarID, locationVal, urlVal,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create event: %w", err)
@@ -135,7 +164,8 @@ func GetUpcoming(limit int) ([]Event, error) {
 
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
-		       created_ts, updated_ts, recurrence_rule, all_day
+		       created_ts, updated_ts, recurrence_rule, all_day,
+		       calendar_id, location, url, parent_event_id
 		FROM events
 		WHERE start_ts >= ?
 		ORDER BY start_ts ASC
@@ -166,7 +196,8 @@ func GetEvents(startTS, endTS int64) ([]Event, error) {
 
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
-		       created_ts, updated_ts, recurrence_rule, all_day
+		       created_ts, updated_ts, recurrence_rule, all_day,
+		       calendar_id, location, url, parent_event_id
 		FROM events WHERE start_ts >= ? AND start_ts <= ?
 		ORDER BY start_ts ASC`, startTS, endTS)
 	if err != nil {
@@ -196,7 +227,8 @@ func GetDueReminders(windowSeconds int64) ([]Event, error) {
 	now := time.Now().Unix()
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
-		       created_ts, updated_ts, recurrence_rule, all_day
+		       created_ts, updated_ts, recurrence_rule, all_day,
+		       calendar_id, location, url, parent_event_id
 		FROM events
 		WHERE reminder_ts IS NOT NULL
 		  AND reminder_ts >= ?
@@ -267,6 +299,80 @@ func DeleteEvent(id int64) error {
 		return fmt.Errorf("delete event %d: %w", id, err)
 	}
 	slog.Info("deleted event", "id", id)
+	return nil
+}
+
+// GetEventsByCalendar returns events for a specific calendar within [startTS, endTS].
+func GetEventsByCalendar(calendarID, startTS, endTS int64) ([]Event, error) {
+	db, err := openDB()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`
+		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
+		       created_ts, updated_ts, recurrence_rule, all_day,
+		       calendar_id, location, url, parent_event_id
+		FROM events
+		WHERE calendar_id = ? AND start_ts >= ? AND start_ts <= ?
+		ORDER BY start_ts ASC`, calendarID, startTS, endTS)
+	if err != nil {
+		return nil, fmt.Errorf("get events by calendar: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// CountEventsForCalendar returns how many events belong to the given calendar.
+func CountEventsForCalendar(calID int64) (int, error) {
+	db, err := openDB()
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE calendar_id = ?`, calID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count events for calendar: %w", err)
+	}
+	return count, nil
+}
+
+// ReassignCalendarEvents moves all events from one calendar to another.
+func ReassignCalendarEvents(fromCalID, toCalID int64) error {
+	db, err := openDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`UPDATE events SET calendar_id = ? WHERE calendar_id = ?`, toCalID, fromCalID); err != nil {
+		return fmt.Errorf("reassign calendar events %d→%d: %w", fromCalID, toCalID, err)
+	}
+	return nil
+}
+
+// DeleteEventsByCalendar removes all events belonging to the given calendar.
+func DeleteEventsByCalendar(calID int64) error {
+	db, err := openDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`DELETE FROM events WHERE calendar_id = ?`, calID); err != nil {
+		return fmt.Errorf("delete events for calendar %d: %w", calID, err)
+	}
 	return nil
 }
 

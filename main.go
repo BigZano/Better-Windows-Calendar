@@ -8,15 +8,19 @@ import (
 	"time"
 
 	"pycalendar/internal/api"
+	"pycalendar/internal/autostart"
+	"pycalendar/internal/config"
 	"pycalendar/internal/daemon"
+	"pycalendar/internal/keychain"
 	"pycalendar/internal/storage"
 	"pycalendar/ui"
 )
 
 func main() {
-	mode := flag.String("mode", "tray", "Run mode: tray | daemon | bar | cli")
+	mode := flag.String("mode", "tray", "Run mode: tray | daemon | bar | cli | uninstall")
 	format := flag.String("format", "text", "Bar output format: text | json | polybar  (bar mode only)")
 	maxEvents := flag.Int("max-events", 3, "Max events to show (bar mode only)")
+	purge := flag.Bool("purge", false, "Also delete the database and config files (uninstall mode only)")
 
 	flag.Parse()
 
@@ -91,7 +95,7 @@ func main() {
 					os.Exit(1)
 				}
 			}
-			id, err := api.CreateEvent(*cliTitle, startTime, nil, *cliNotes, cliReminder, "", false, "Local")
+			id, err := api.CreateEvent(*cliTitle, startTime, nil, *cliNotes, cliReminder, "", false, "Local", 0, "", "")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "create event failed: %v\n", err)
 				os.Exit(1)
@@ -115,6 +119,37 @@ func main() {
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 			os.Exit(1)
+		}
+
+	case "uninstall":
+		if err := storage.InitDB(); err != nil {
+			slog.Error("init db failed", "err", err)
+			os.Exit(1)
+		}
+		if err := keychain.DeleteAll(); err != nil {
+			slog.Warn("keychain cleanup failed", "err", err)
+		}
+		if autostart.IsEnabled() {
+			if err := autostart.Disable(); err != nil {
+				slog.Warn("autostart disable failed", "err", err)
+			}
+		}
+		if *purge {
+			dbPath, err := storage.GetDBPath()
+			if err == nil {
+				if err := os.Remove(dbPath); err != nil && !os.IsNotExist(err) {
+					slog.Warn("failed to remove database", "err", err)
+				}
+			}
+			cfgPath, err := config.GetConfigPath()
+			if err == nil {
+				if err := os.Remove(cfgPath); err != nil && !os.IsNotExist(err) {
+					slog.Warn("failed to remove config", "err", err)
+				}
+			}
+			fmt.Println("uninstall complete: keychain entries, autostart, database, and config removed")
+		} else {
+			fmt.Println("uninstall complete: keychain entries and autostart removed (use --purge to also delete data files)")
 		}
 
 	default:

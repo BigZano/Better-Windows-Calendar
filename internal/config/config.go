@@ -28,8 +28,11 @@ type MobilePushConfig struct {
 }
 
 type UIConfig struct {
-	Theme           string `toml:"theme"`
-	ShowWeekNumbers bool   `toml:"show_week_numbers"`
+	Theme               string  `toml:"theme"`               // "system" | "light" | "dark" | "retro"
+	DefaultView         string  `toml:"default_view"`        // "day" | "week" | "month"
+	ShowWeekNumbers     bool    `toml:"show_week_numbers"`
+	MuteInviteCalendars []int64 `toml:"mute_invite_calendars"` // calendar IDs with invite prompts silenced
+	HiddenCalendars     []int64 `toml:"hidden_calendars"`      // calendar IDs hidden in all grid views
 }
 
 // Default returns the default configuration.
@@ -45,8 +48,10 @@ func Default() Config {
 			WebhookURL: "",
 		},
 		UI: UIConfig{
-			Theme:           "retro",
-			ShowWeekNumbers: true,
+			Theme:               "system",
+			DefaultView:         "day",
+			ShowWeekNumbers:     false,
+			MuteInviteCalendars: nil,
 		},
 	}
 }

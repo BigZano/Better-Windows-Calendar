@@ -2,12 +2,17 @@ package ui
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/getlantern/systray"
 
 	"pycalendar/internal/api"
+	"pycalendar/internal/config"
+	"pycalendar/internal/daemon"
 	"pycalendar/internal/storage"
 )
+
+var embeddedDaemon *daemon.Daemon
 
 // RunTray initialises the database, then starts the system tray event loop.
 // This function blocks until the user quits.
@@ -16,6 +21,11 @@ func RunTray() {
 		slog.Error("failed to init database", "err", err)
 		return
 	}
+	if cfg, err := config.Load(); err != nil {
+		slog.Warn("failed to load config", "err", err)
+	} else {
+		InitVisibilityFromConfig(cfg.UI.HiddenCalendars)
+	}
 	systray.Run(onReady, onExit)
 }
 
@@ -23,6 +33,9 @@ func onReady() {
 	systray.SetTitle("PyCalendar")
 	systray.SetTooltip("PyCalendar")
 	setTrayIcon()
+
+	embeddedDaemon = daemon.New(30 * time.Second)
+	go embeddedDaemon.Run()
 
 	mOpen := systray.AddMenuItem("Open Calendar", "Show the calendar window")
 	mAdd := systray.AddMenuItem("Add Event", "Add a new event")
@@ -43,11 +56,13 @@ func onReady() {
 		}
 	}()
 
-	// Refresh tray tooltip with upcoming event count on start.
 	go updateTooltip()
 }
 
 func onExit() {
+	if embeddedDaemon != nil {
+		embeddedDaemon.Stop()
+	}
 	slog.Info("tray exiting")
 }
 

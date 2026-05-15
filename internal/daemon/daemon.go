@@ -90,7 +90,7 @@ func (d *Daemon) checkReminders() {
 			msg += "\n" + e.Notes.String
 		}
 
-		if err := notifier.Notify(title, msg); err != nil {
+		if err := notifier.Notify(title, msg, cfg.Notifications.SoundEnabled); err != nil {
 			slog.Warn("notification failed", "event_id", e.ID, "err", err)
 			continue
 		}
