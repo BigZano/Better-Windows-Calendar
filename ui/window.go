@@ -473,6 +473,12 @@ func ShowAddEventDialog(onSuccess func()) {
 	urlEntry := widget.NewEntry()
 	urlEntry.SetPlaceHolder("URL (optional)")
 
+	// Single attachment link row on the Add form; more can be added via Edit.
+	attachURLEntry := widget.NewEntry()
+	attachURLEntry.SetPlaceHolder("https://zoom.us/j/… (optional)")
+	attachLabelEntry := widget.NewEntry()
+	attachLabelEntry.SetPlaceHolder("Label (optional)")
+
 	reminderEntry := widget.NewEntry()
 	reminderEntry.SetText("15")
 
@@ -533,6 +539,15 @@ func ShowAddEventDialog(onSuccess func()) {
 
 		rruleStr := buildRRULE(repeatSelect.Selected, startTime, untilEntry.Text)
 
+		// Validate attachment URL if provided before persisting the event.
+		if attachURLEntry.Text != "" {
+			if err := api.ValidateAttachmentURL(attachURLEntry.Text); err != nil {
+				errorLabel.Text = "Invalid link URL: " + err.Error()
+				errorLabel.Refresh()
+				return
+			}
+		}
+
 		id, err := api.CreateEvent(
 			title, startTime, endTime,
 			notesEntry.Text, &reminderMin,
@@ -559,6 +574,13 @@ func ShowAddEventDialog(onSuccess func()) {
 			}
 		}
 
+		// Persist the optional attachment link.
+		if attachURLEntry.Text != "" {
+			if _, err := api.AddAttachment(id, attachLabelEntry.Text, attachURLEntry.Text); err != nil {
+				slog.Error("add attachment on create", "event_id", id, "err", err)
+			}
+		}
+
 		slog.Info("event created via UI", "id", id)
 		w.Close()
 		if onSuccess != nil {
@@ -576,6 +598,9 @@ func ShowAddEventDialog(onSuccess func()) {
 		formRow("Notes:", notesEntry),
 		formRow("Location:", locationEntry),
 		formRow("URL:", urlEntry),
+		widget.NewLabelWithStyle("Meeting link (attachment)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		formRow("Link URL:", attachURLEntry),
+		formRow("Link label:", attachLabelEntry),
 		formRow("Reminder (min before):", reminderEntry),
 		formRow("Repeat:", repeatSelect),
 		formRow("Repeat until (optional):", untilEntry),

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -29,7 +30,7 @@ func ShowEventDetailWindow(e api.Event, onSave func()) {
 
 	a := getFyneApp()
 	w := a.NewWindow("Edit Event — " + e.Title)
-	w.Resize(fyne.NewSize(460, 520))
+	w.Resize(fyne.NewSize(460, 680))
 
 	cals, _ := api.GetCalendars()
 	calNames := make([]string, len(cals))
@@ -79,6 +80,73 @@ func ShowEventDetailWindow(e api.Event, onSave func()) {
 	if e.URL.Valid {
 		urlEntry.SetText(e.URL.String)
 	}
+
+	// ---- Attachments section ----
+	existingAttachments, _ := api.GetAttachments(e.ID)
+
+	attachErrorLabel := canvas.NewText("", color.RGBA{R: 200, A: 255})
+
+	// The live list of attachment rows rendered in the form.
+	attachList := container.NewVBox()
+
+	var rebuildAttachList func([]api.Attachment)
+	rebuildAttachList = func(atts []api.Attachment) {
+		attachList.Objects = nil
+		for _, a := range atts {
+			att := a
+			displayText := att.URL
+			if att.Label != "" {
+				displayText = att.Label + " — " + att.URL
+			}
+			lnk := widget.NewHyperlink(displayText, mustParseURL(att.URL))
+			removeBtn := widget.NewButton("Remove", func() {
+				if err := api.DeleteAttachment(att.ID); err != nil {
+					slog.Error("delete attachment", "id", att.ID, "err", err)
+					attachErrorLabel.Text = "Remove failed: " + err.Error()
+					attachErrorLabel.Refresh()
+					return
+				}
+				updated, _ := api.GetAttachments(e.ID)
+				rebuildAttachList(updated)
+			})
+			removeBtn.Importance = widget.DangerImportance
+			attachList.Add(container.NewHBox(lnk, removeBtn))
+		}
+		attachList.Refresh()
+	}
+	rebuildAttachList(existingAttachments)
+
+	newLinkURLEntry := widget.NewEntry()
+	newLinkURLEntry.SetPlaceHolder("https://example.com/meeting")
+	newLinkLabelEntry := widget.NewEntry()
+	newLinkLabelEntry.SetPlaceHolder("Label (optional)")
+
+	addLinkBtn := widget.NewButton("Add Link", func() {
+		rawURL := newLinkURLEntry.Text
+		label := newLinkLabelEntry.Text
+		if _, err := api.AddAttachment(e.ID, label, rawURL); err != nil {
+			attachErrorLabel.Text = err.Error()
+			attachErrorLabel.Refresh()
+			return
+		}
+		attachErrorLabel.Text = ""
+		attachErrorLabel.Refresh()
+		newLinkURLEntry.SetText("")
+		newLinkLabelEntry.SetText("")
+		updated, _ := api.GetAttachments(e.ID)
+		rebuildAttachList(updated)
+	})
+
+	attachSection := container.NewVBox(
+		widget.NewLabelWithStyle("Attachments", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		attachList,
+		attachErrorLabel,
+		formRow("URL:", newLinkURLEntry),
+		formRow("Label:", newLinkLabelEntry),
+		addLinkBtn,
+	)
+
+	// ---- end Attachments section ----
 
 	reminderEntry := widget.NewEntry()
 	if e.ReminderTS.Valid {
@@ -193,6 +261,7 @@ func ShowEventDetailWindow(e api.Event, onSave func()) {
 		formRow("Notes:", notesEntry),
 		formRow("Location:", locationEntry),
 		formRow("URL:", urlEntry),
+		attachSection,
 		formRow("Reminder (min before):", reminderEntry),
 		formRow("Calendar:", calSelect),
 		formRow("Categories:", catWidget),
@@ -253,6 +322,16 @@ func boolToIntVal(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// mustParseURL parses a URL string for use with widget.NewHyperlink.
+// If parsing fails it falls back to an empty URL so the UI still renders.
+func mustParseURL(raw string) *url.URL {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return &url.URL{}
+	}
+	return u
 }
 
 // ShowPopOutWindow opens a secondary window listing all events in a crowded BSP slot.
