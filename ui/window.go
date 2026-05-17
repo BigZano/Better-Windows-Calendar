@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -371,11 +372,56 @@ func calendarMap(cals []api.Calendar) map[int64]api.Calendar {
 
 // ---- Add Event dialog ----
 
+// buildRRULE converts simple UI recurrence choices into an RFC 5545 RRULE string.
+// Returns "" when freq is "None" or unrecognized.
+func buildRRULE(freq string, startTime time.Time, untilDate string) string {
+	if freq == "None" || freq == "" {
+		return ""
+	}
+	var parts []string
+	switch freq {
+	case "Daily":
+		parts = append(parts, "FREQ=DAILY")
+	case "Weekly":
+		days := []string{"SU", "MO", "TU", "WE", "TH", "FR", "SA"}
+		parts = append(parts, "FREQ=WEEKLY", "BYDAY="+days[startTime.Weekday()])
+	case "Monthly":
+		parts = append(parts, "FREQ=MONTHLY")
+	case "Yearly":
+		parts = append(parts, "FREQ=YEARLY")
+	default:
+		return ""
+	}
+	if untilDate != "" {
+		t, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(untilDate), time.UTC)
+		if err == nil {
+			parts = append(parts, "UNTIL="+t.Format("20060102T150405Z"))
+		}
+	}
+	return strings.Join(parts, ";")
+}
+
+// friendlyRRule converts an RFC 5545 RRULE string to a short human label.
+func friendlyRRule(rrule string) string {
+	upper := strings.ToUpper(rrule)
+	switch {
+	case strings.Contains(upper, "FREQ=DAILY"):
+		return "Daily"
+	case strings.Contains(upper, "FREQ=WEEKLY"):
+		return "Weekly"
+	case strings.Contains(upper, "FREQ=MONTHLY"):
+		return "Monthly"
+	case strings.Contains(upper, "FREQ=YEARLY"):
+		return "Yearly"
+	}
+	return rrule
+}
+
 // ShowAddEventDialog opens a form for creating a new event.
 func ShowAddEventDialog(onSuccess func()) {
 	a := getFyneApp()
 	w := a.NewWindow("Add Event")
-	w.Resize(fyne.NewSize(460, 520))
+	w.Resize(fyne.NewSize(460, 620))
 
 	cals, _ := api.GetCalendars()
 	calNames := make([]string, len(cals))
@@ -413,6 +459,13 @@ func ShowAddEventDialog(onSuccess func()) {
 
 	reminderEntry := widget.NewEntry()
 	reminderEntry.SetText("15")
+
+	repeatFreqs := []string{"None", "Daily", "Weekly", "Monthly", "Yearly"}
+	repeatSelect := widget.NewSelect(repeatFreqs, nil)
+	repeatSelect.SetSelectedIndex(0)
+
+	untilEntry := widget.NewEntry()
+	untilEntry.SetPlaceHolder("YYYY-MM-DD (optional end date)")
 
 	calSelect := widget.NewSelect(calNames, nil)
 	calSelect.SetSelectedIndex(0)
@@ -460,10 +513,12 @@ func ShowAddEventDialog(onSuccess func()) {
 			calID = calIDs[calSelect.SelectedIndex()]
 		}
 
+		rruleStr := buildRRULE(repeatSelect.Selected, startTime, untilEntry.Text)
+
 		id, err := api.CreateEvent(
 			title, startTime, endTime,
 			notesEntry.Text, &reminderMin,
-			"", allDayCheck.Checked,
+			rruleStr, allDayCheck.Checked,
 			"Local", calID,
 			locationEntry.Text, urlEntry.Text,
 		)
@@ -492,6 +547,8 @@ func ShowAddEventDialog(onSuccess func()) {
 		formRow("Location:", locationEntry),
 		formRow("URL:", urlEntry),
 		formRow("Reminder (min before):", reminderEntry),
+		formRow("Repeat:", repeatSelect),
+		formRow("Repeat until (optional):", untilEntry),
 		formRow("Calendar:", calSelect),
 		errorLabel,
 		container.NewHBox(saveBtn, cancelBtn),

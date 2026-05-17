@@ -58,6 +58,7 @@ require (
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tadvi/systray v0.0.0-20190226123456-11a2b8fa57af // indirect
+	github.com/teambition/rrule-go v1.8.2 // indirect
 	github.com/yuin/goldmark v1.7.8 // indirect
 	github.com/zalando/go-keyring v0.2.8 // indirect
 	golang.org/x/image v0.24.0 // indirect

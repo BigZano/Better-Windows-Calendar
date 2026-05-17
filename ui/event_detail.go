@@ -16,8 +16,17 @@ import (
 )
 
 // ShowEventDetailWindow opens an edit window for an existing event.
+// If e is a virtual recurring occurrence (ID=0), the master is fetched first.
 // onSave is called after a successful save.
 func ShowEventDetailWindow(e api.Event, onSave func()) {
+	// Virtual occurrence: ID=0, ParentEventID points to master.
+	if e.ID == 0 && e.ParentEventID.Valid {
+		master, err := api.GetEvent(e.ParentEventID.Int64)
+		if err == nil {
+			e = master
+		}
+	}
+
 	a := getFyneApp()
 	w := a.NewWindow("Edit Event — " + e.Title)
 	w.Resize(fyne.NewSize(460, 520))
@@ -158,7 +167,7 @@ func ShowEventDetailWindow(e api.Event, onSave func()) {
 
 	cancelBtn := widget.NewButton("Cancel", func() { w.Close() })
 
-	form := container.NewVBox(
+	formItems := []fyne.CanvasObject{
 		formRow("Title:", titleEntry),
 		formRow("Start (YYYY-MM-DD HH:MM):", startEntry),
 		formRow("End (optional):", endEntry),
@@ -168,9 +177,17 @@ func ShowEventDetailWindow(e api.Event, onSave func()) {
 		formRow("URL:", urlEntry),
 		formRow("Reminder (min before):", reminderEntry),
 		formRow("Calendar:", calSelect),
-		errorLabel,
-		container.NewHBox(saveBtn, deleteBtn, cancelBtn),
-	)
+	}
+	if e.RecurrenceRule.Valid && e.RecurrenceRule.String != "" {
+		recurrLbl := widget.NewLabel("Repeats: " + friendlyRRule(e.RecurrenceRule.String))
+		recurrLbl.TextStyle = fyne.TextStyle{Italic: true}
+		note := widget.NewLabel("Edits apply to all occurrences. Per-occurrence editing coming in a future update.")
+		note.Wrapping = fyne.TextWrapWord
+		note.TextStyle = fyne.TextStyle{Italic: true}
+		formItems = append(formItems, recurrLbl, note)
+	}
+	formItems = append(formItems, errorLabel, container.NewHBox(saveBtn, deleteBtn, cancelBtn))
+	form := container.NewVBox(formItems...)
 
 	w.SetContent(container.NewVScroll(form))
 	w.Show()

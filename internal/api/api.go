@@ -154,7 +154,23 @@ func CreateEvent(
 	return id, nil
 }
 
-// GetUpcoming returns the next limit events whose start_ts is in the future.
+// GetEvent returns a single event by ID.
+func GetEvent(id int64) (Event, error) {
+	db, err := openDB()
+	if err != nil {
+		return Event{}, err
+	}
+	defer db.Close()
+
+	row := db.QueryRow(`
+		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
+		       created_ts, updated_ts, recurrence_rule, all_day,
+		       calendar_id, location, url, parent_event_id
+		FROM events WHERE id = ?`, id)
+	return scanEvent(row)
+}
+
+// GetUpcoming returns the next limit events (including recurring occurrences) after now.
 func GetUpcoming(limit int) ([]Event, error) {
 	db, err := openDB()
 	if err != nil {
@@ -162,31 +178,44 @@ func GetUpcoming(limit int) ([]Event, error) {
 	}
 	defer db.Close()
 
+	now := time.Now()
+	// Expand up to 1 year ahead to capture recurring occurrences.
+	windowEnd := now.AddDate(1, 0, 0)
+
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
 		       created_ts, updated_ts, recurrence_rule, all_day,
 		       calendar_id, location, url, parent_event_id
 		FROM events
 		WHERE start_ts >= ?
-		ORDER BY start_ts ASC
-		LIMIT ?`, time.Now().Unix(), limit)
+		ORDER BY start_ts ASC`, now.Unix())
 	if err != nil {
 		return nil, fmt.Errorf("get upcoming: %w", err)
 	}
 	defer rows.Close()
 
-	var events []Event
+	var raw []Event
 	for rows.Next() {
 		e, err := scanEvent(rows)
 		if err != nil {
 			return nil, err
 		}
-		events = append(events, e)
+		raw = append(raw, e)
 	}
-	return events, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	earlyMasters := queryEarlyRecurringMasters(db, now.Unix())
+	expanded := expandEvents(raw, earlyMasters, now, windowEnd)
+
+	if len(expanded) > limit {
+		expanded = expanded[:limit]
+	}
+	return expanded, nil
 }
 
-// GetEvents returns events whose start_ts falls within [startTS, endTS].
+// GetEvents returns events (including recurring occurrences) within [startTS, endTS].
 func GetEvents(startTS, endTS int64) ([]Event, error) {
 	db, err := openDB()
 	if err != nil {
@@ -205,15 +234,20 @@ func GetEvents(startTS, endTS int64) ([]Event, error) {
 	}
 	defer rows.Close()
 
-	var events []Event
+	var raw []Event
 	for rows.Next() {
 		e, err := scanEvent(rows)
 		if err != nil {
 			return nil, err
 		}
-		events = append(events, e)
+		raw = append(raw, e)
 	}
-	return events, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	earlyMasters := queryEarlyRecurringMasters(db, startTS)
+	return expandEvents(raw, earlyMasters, time.Unix(startTS, 0), time.Unix(endTS, 0)), nil
 }
 
 // GetDueReminders returns events whose reminder_ts is within the next windowSeconds.
@@ -302,7 +336,8 @@ func DeleteEvent(id int64) error {
 	return nil
 }
 
-// GetEventsByCalendar returns events for a specific calendar within [startTS, endTS].
+// GetEventsByCalendar returns events for a specific calendar within [startTS, endTS],
+// including recurring occurrences.
 func GetEventsByCalendar(calendarID, startTS, endTS int64) ([]Event, error) {
 	db, err := openDB()
 	if err != nil {
@@ -322,15 +357,41 @@ func GetEventsByCalendar(calendarID, startTS, endTS int64) ([]Event, error) {
 	}
 	defer rows.Close()
 
-	var events []Event
+	var raw []Event
 	for rows.Next() {
 		e, err := scanEvent(rows)
 		if err != nil {
 			return nil, err
 		}
-		events = append(events, e)
+		raw = append(raw, e)
 	}
-	return events, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Early recurring masters for this calendar.
+	earlyRows, err := db.Query(`
+		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
+		       created_ts, updated_ts, recurrence_rule, all_day,
+		       calendar_id, location, url, parent_event_id
+		FROM events
+		WHERE calendar_id = ? AND recurrence_rule IS NOT NULL
+		  AND parent_event_id IS NULL AND start_ts < ?`, calendarID, startTS)
+	if err != nil {
+		return expandEvents(raw, nil, time.Unix(startTS, 0), time.Unix(endTS, 0)), nil
+	}
+	defer earlyRows.Close()
+
+	var earlyMasters []Event
+	for earlyRows.Next() {
+		e, err := scanEvent(earlyRows)
+		if err != nil {
+			continue
+		}
+		earlyMasters = append(earlyMasters, e)
+	}
+
+	return expandEvents(raw, earlyMasters, time.Unix(startTS, 0), time.Unix(endTS, 0)), nil
 }
 
 // CountEventsForCalendar returns how many events belong to the given calendar.
