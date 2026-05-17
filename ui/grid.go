@@ -207,8 +207,8 @@ func (r *timeGridRenderer) renderDayEvents(events []api.Event, colX, colWidth fl
 	groups := overlapGroups(events)
 	for _, group := range groups {
 		fracs := bspAssign(group)
-		for _, e := range group {
-			lr := fracs[e.ID]
+		for i, e := range group {
+			lr := fracs[i]
 			startFrac := timeOfDayFraction(time.Unix(e.StartTS, 0))
 			var endFrac float32
 			if e.EndTS.Valid {
@@ -246,6 +246,20 @@ func (r *timeGridRenderer) renderDayEvents(events []api.Event, colX, colWidth fl
 				r.objects = append(r.objects, title)
 			}
 
+			// Category color dots — up to 4, rendered in the bottom-left corner.
+			if len(e.Categories) > 0 && eH >= 22 {
+				dotY := eY + eH - 8
+				for di, cat := range e.Categories {
+					if di >= 4 {
+						break
+					}
+					dot := canvas.NewRectangle(parseHexColor(cat.Color))
+					dot.Move(fyne.NewPos(eX+3+float32(di)*8, dotY))
+					dot.Resize(fyne.NewSize(6, 6))
+					r.objects = append(r.objects, dot)
+				}
+			}
+
 			var groupEvt []api.Event
 			if isNarrow {
 				groupEvt = group
@@ -268,37 +282,38 @@ func (g *TimeGridWidget) calendarColor(e api.Event) string {
 
 // ---- BSP layout ----
 
-// bspAssign returns a map from event ID → [leftFrac, rightFrac] within [0,1].
-func bspAssign(events []api.Event) map[int64][2]float32 {
+// bspAssign returns fracs[i] = [leftFrac, rightFrac] for events[i] within [0,1].
+// Uses slice indices rather than event IDs to avoid collisions with virtual occurrences (ID=0).
+func bspAssign(events []api.Event) [][2]float32 {
 	type block struct {
-		l, r    float32
-		eventID int64
+		l, r float32
+		idx  int
 	}
-	if len(events) == 0 {
+	n := len(events)
+	if n == 0 {
 		return nil
 	}
 
-	blocks := []block{{l: 0, r: 1, eventID: events[0].ID}}
+	blocks := []block{{l: 0, r: 1, idx: 0}}
 
-	for _, e := range events[1:] {
-		// find widest block
+	for i := 1; i < n; i++ {
 		widestIdx := 0
 		widest := blocks[0].r - blocks[0].l
-		for i, b := range blocks[1:] {
+		for j, b := range blocks[1:] {
 			if w := b.r - b.l; w > widest {
 				widest = w
-				widestIdx = i + 1
+				widestIdx = j + 1
 			}
 		}
 		b := blocks[widestIdx]
 		mid := (b.l + b.r) / 2
-		blocks[widestIdx] = block{l: b.l, r: mid, eventID: b.eventID}
-		blocks = append(blocks, block{l: mid, r: b.r, eventID: e.ID})
+		blocks[widestIdx] = block{l: b.l, r: mid, idx: b.idx}
+		blocks = append(blocks, block{l: mid, r: b.r, idx: i})
 	}
 
-	result := make(map[int64][2]float32, len(blocks))
+	result := make([][2]float32, n)
 	for _, b := range blocks {
-		result[b.eventID] = [2]float32{b.l, b.r}
+		result[b.idx] = [2]float32{b.l, b.r}
 	}
 	return result
 }
@@ -365,7 +380,7 @@ func eventsForDay(events []api.Event, day time.Time) []api.Event {
 			continue
 		}
 		if e.StartTS >= dayStart && e.StartTS < dayEnd {
-			if isCalendarVisible(calIDOf(e)) {
+			if isCalendarVisible(calIDOf(e)) && isEventMatchingFilter(e) {
 				result = append(result, e)
 			}
 		}
@@ -385,7 +400,7 @@ func allDayEventsForDay(events []api.Event, day time.Time) []api.Event {
 			continue
 		}
 		if e.StartTS >= dayStart && e.StartTS < dayEnd {
-			if isCalendarVisible(calIDOf(e)) {
+			if isCalendarVisible(calIDOf(e)) && isEventMatchingFilter(e) {
 				result = append(result, e)
 			}
 		}

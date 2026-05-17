@@ -91,6 +91,14 @@ func ShowEventDetailWindow(e api.Event, onSave func()) {
 	calSelect := widget.NewSelect(calNames, nil)
 	calSelect.SetSelectedIndex(selectedCalIdx)
 
+	// Pre-check existing categories for this event.
+	existingCats, _ := api.GetEventCategories(e.ID)
+	checkedCats := make(map[int64]bool, len(existingCats))
+	for _, c := range existingCats {
+		checkedCats[c.ID] = true
+	}
+	catChecks, catIDs, catWidget := buildCategoryChecklist(checkedCats)
+
 	errorLabel := canvas.NewText("", color.RGBA{R: 200, A: 255})
 
 	saveBtn := widget.NewButton("Save", func() {
@@ -148,6 +156,16 @@ func ShowEventDetailWindow(e api.Event, onSave func()) {
 			return
 		}
 
+		var selectedCats []int64
+		for i, ch := range catChecks {
+			if ch.Checked {
+				selectedCats = append(selectedCats, catIDs[i])
+			}
+		}
+		if err := api.SetEventCategories(e.ID, selectedCats); err != nil {
+			slog.Error("set event categories failed", "id", e.ID, "err", err)
+		}
+
 		slog.Info("event updated via UI", "id", e.ID)
 		w.Close()
 		if onSave != nil {
@@ -177,6 +195,7 @@ func ShowEventDetailWindow(e api.Event, onSave func()) {
 		formRow("URL:", urlEntry),
 		formRow("Reminder (min before):", reminderEntry),
 		formRow("Calendar:", calSelect),
+		formRow("Categories:", catWidget),
 	}
 	if e.RecurrenceRule.Valid && e.RecurrenceRule.String != "" {
 		recurrLbl := widget.NewLabel("Repeats: " + friendlyRRule(e.RecurrenceRule.String))

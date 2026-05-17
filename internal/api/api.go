@@ -44,6 +44,9 @@ type Event struct {
 	Location       sql.NullString
 	URL            sql.NullString
 	ParentEventID  sql.NullInt64
+
+	// Categories is populated on-demand by EnrichEventsWithCategories; nil if not loaded.
+	Categories []Category
 }
 
 // StartTime returns the event start as a local time.Time.

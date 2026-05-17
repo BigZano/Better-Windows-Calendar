@@ -3,6 +3,8 @@ package api
 import (
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 )
 
 // Category mirrors the categories table schema.
@@ -68,14 +70,20 @@ func DeleteCategory(id int64) error {
 	}
 	defer db.Close()
 
-	if _, err := db.Exec(`DELETE FROM event_categories WHERE category_id = ?`, id); err != nil {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM event_categories WHERE category_id = ?`, id); err != nil {
+		tx.Rollback()
 		return fmt.Errorf("delete event_categories for category %d: %w", id, err)
 	}
-	if _, err := db.Exec(`DELETE FROM categories WHERE id = ?`, id); err != nil {
+	if _, err := tx.Exec(`DELETE FROM categories WHERE id = ?`, id); err != nil {
+		tx.Rollback()
 		return fmt.Errorf("delete category %d: %w", id, err)
 	}
 	slog.Info("deleted category", "id", id)
-	return nil
+	return tx.Commit()
 }
 
 // AddEventCategory tags an event with a category. Idempotent.
@@ -142,6 +150,99 @@ func GetEventCategories(eventID int64) ([]Category, error) {
 		cats = append(cats, c)
 	}
 	return cats, rows.Err()
+}
+
+// SetEventCategories replaces all category tags on an event in a single transaction.
+func SetEventCategories(eventID int64, categoryIDs []int64) error {
+	db, err := openDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM event_categories WHERE event_id = ?`, eventID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("clear event categories: %w", err)
+	}
+	for _, catID := range categoryIDs {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO event_categories (event_id, category_id) VALUES (?, ?)`, eventID, catID); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("set event category: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`UPDATE events SET updated_ts = ? WHERE id = ?`, time.Now().Unix(), eventID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("update event ts: %w", err)
+	}
+	return tx.Commit()
+}
+
+// EnrichEventsWithCategories populates the Categories field on each event in-place.
+// Virtual recurring occurrences (ID=0) are looked up via ParentEventID.
+func EnrichEventsWithCategories(events []Event) error {
+	idSet := make(map[int64]bool)
+	for _, e := range events {
+		if e.ID != 0 {
+			idSet[e.ID] = true
+		} else if e.ParentEventID.Valid {
+			idSet[e.ParentEventID.Int64] = true
+		}
+	}
+	if len(idSet) == 0 {
+		return nil
+	}
+
+	ids := make([]int64, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+
+	db, err := openDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	rows, err := db.Query(`
+		SELECT ec.event_id, c.id, c.name, c.color
+		FROM event_categories ec
+		JOIN categories c ON c.id = ec.category_id
+		WHERE ec.event_id IN (`+placeholders+`)
+		ORDER BY ec.event_id, c.name`, args...)
+	if err != nil {
+		return fmt.Errorf("enrich categories: %w", err)
+	}
+	defer rows.Close()
+
+	catMap := make(map[int64][]Category)
+	for rows.Next() {
+		var eventID int64
+		var c Category
+		if err := rows.Scan(&eventID, &c.ID, &c.Name, &c.Color); err != nil {
+			continue
+		}
+		catMap[eventID] = append(catMap[eventID], c)
+	}
+
+	for i := range events {
+		lookupID := events[i].ID
+		if lookupID == 0 && events[i].ParentEventID.Valid {
+			lookupID = events[i].ParentEventID.Int64
+		}
+		events[i].Categories = catMap[lookupID]
+	}
+	return rows.Err()
 }
 
 // GetEventsByCategory returns all events tagged with the given category.

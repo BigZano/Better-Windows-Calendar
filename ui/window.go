@@ -58,6 +58,12 @@ func ShowCalendarWindow() {
 		allReload()
 	}
 
+	filterBar, filterRebuild := buildCategoryFilterBar(allReload)
+	onCategoriesChanged = func() {
+		filterRebuild()
+		allReload()
+	}
+
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Day", dayView),
 		container.NewTabItem("Week", weekView),
@@ -101,7 +107,8 @@ func ShowCalendarWindow() {
 	})
 
 	toolbar := container.NewHBox(addBtn, settingsBtn)
-	main := container.NewBorder(toolbar, nil, nil, nil, tabs)
+	topBar := container.NewVBox(toolbar, filterBar)
+	main := container.NewBorder(topBar, nil, nil, nil, tabs)
 	split := container.NewHSplit(sidebar, main)
 	split.SetOffset(0.18)
 
@@ -335,6 +342,9 @@ func loadDayEvents(day time.Time) []api.Event {
 	if err != nil {
 		slog.Error("load day events", "err", err)
 	}
+	if err := api.EnrichEventsWithCategories(events); err != nil {
+		slog.Error("enrich day events categories", "err", err)
+	}
 	return events
 }
 
@@ -343,6 +353,9 @@ func loadWeekEvents(weekStart time.Time) []api.Event {
 	events, err := api.GetEvents(start, start+7*86400)
 	if err != nil {
 		slog.Error("load week events", "err", err)
+	}
+	if err := api.EnrichEventsWithCategories(events); err != nil {
+		slog.Error("enrich week events categories", "err", err)
 	}
 	return events
 }
@@ -353,6 +366,9 @@ func loadMonthEvents(year, month int) []api.Event {
 	events, err := api.GetEvents(start, end)
 	if err != nil {
 		slog.Error("load month events", "err", err)
+	}
+	if err := api.EnrichEventsWithCategories(events); err != nil {
+		slog.Error("enrich month events categories", "err", err)
 	}
 	return events
 }
@@ -470,6 +486,8 @@ func ShowAddEventDialog(onSuccess func()) {
 	calSelect := widget.NewSelect(calNames, nil)
 	calSelect.SetSelectedIndex(0)
 
+	catChecks, catIDs, catWidget := buildCategoryChecklist(nil)
+
 	errorLabel := canvas.NewText("", color.RGBA{R: 200, A: 255})
 
 	saveBtn := widget.NewButton("Save", func() {
@@ -529,6 +547,18 @@ func ShowAddEventDialog(onSuccess func()) {
 			return
 		}
 
+		var selectedCats []int64
+		for i, ch := range catChecks {
+			if ch.Checked {
+				selectedCats = append(selectedCats, catIDs[i])
+			}
+		}
+		if len(selectedCats) > 0 {
+			if err := api.SetEventCategories(id, selectedCats); err != nil {
+				slog.Error("set event categories failed", "id", id, "err", err)
+			}
+		}
+
 		slog.Info("event created via UI", "id", id)
 		w.Close()
 		if onSuccess != nil {
@@ -550,6 +580,7 @@ func ShowAddEventDialog(onSuccess func()) {
 		formRow("Repeat:", repeatSelect),
 		formRow("Repeat until (optional):", untilEntry),
 		formRow("Calendar:", calSelect),
+		formRow("Categories:", catWidget),
 		errorLabel,
 		container.NewHBox(saveBtn, cancelBtn),
 	)
@@ -560,7 +591,7 @@ func ShowAddEventDialog(onSuccess func()) {
 
 // ---- Settings window ----
 
-// ShowSettingsWindow opens the full settings window with Notifications and Calendars tabs.
+// ShowSettingsWindow opens the full settings window with Notifications, Calendars, and Categories tabs.
 func ShowSettingsWindow() {
 	a := getFyneApp()
 	w := a.NewWindow("Settings")
@@ -568,10 +599,12 @@ func ShowSettingsWindow() {
 
 	notifTab := buildNotificationsTab(w)
 	calTab := buildCalendarsTab()
+	catTab := buildCategoriesSettingsTab()
 
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Notifications", notifTab),
 		container.NewTabItem("Calendars", calTab),
+		container.NewTabItem("Categories", catTab),
 	)
 	w.SetContent(tabs)
 	w.Show()

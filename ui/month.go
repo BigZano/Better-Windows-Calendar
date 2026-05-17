@@ -158,6 +158,7 @@ func buildMonthView(year, month int, events []api.Event) (fyne.CanvasObject, fun
 		start := time.Date(y, time.Month(mo), 1, 0, 0, 0, 0, time.Local).Unix()
 		end := time.Date(y, time.Month(mo+1), 1, 0, 0, 0, 0, time.Local).Unix()
 		evts, _ := api.GetEvents(start, end)
+		_ = api.EnrichEventsWithCategories(evts)
 		mw.Reload(y, mo, evts)
 	}
 
