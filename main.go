@@ -27,6 +27,8 @@ func main() {
 	// Structured logging to stderr; tray/daemon redirect to file in production.
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
+	ui.SetTrayIconData(appIconPNG)
+
 	switch *mode {
 	case "tray":
 		ui.RunTray()

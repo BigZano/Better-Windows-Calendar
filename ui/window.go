@@ -1124,5 +1124,3 @@ func ShowEditCalendarWindow(cal api.Calendar, onSave func()) {
 	w.Show()
 }
 
-// setTrayIcon — placeholder; replace with //go:embed assets/icon.png later.
-func setTrayIcon() {}

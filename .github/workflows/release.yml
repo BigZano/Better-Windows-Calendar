@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  # ── Windows: build .exe + Inno Setup installer ──────────────────────────────
+  # ── Windows: icon embed → exe → Inno Setup installer ────────────────────────
   build-windows:
     runs-on: windows-latest
     steps:
@@ -24,6 +24,24 @@ jobs:
         shell: pwsh
         run: echo "VERSION=$($env:GITHUB_REF -replace 'refs/tags/v','')" >> $env:GITHUB_OUTPUT
 
+      - name: Install go-winres
+        run: go install github.com/tc-hib/go-winres@latest
+
+      - name: Patch version in winres.json
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.ver.outputs.VERSION }}"
+          $quad = "$ver.0"   # e.g. 1.2.3.0
+          $j = Get-Content winres/winres.json -Raw
+          $j = $j -replace '"file_version": ".*"',    "`"file_version`": `"$quad`""
+          $j = $j -replace '"product_version": ".*"', "`"product_version`": `"$quad`""
+          $j = $j -replace '"FileVersion": ".*"',     "`"FileVersion`": `"$ver`""
+          $j = $j -replace '"ProductVersion": ".*"',  "`"ProductVersion`": `"$ver`""
+          Set-Content winres/winres.json $j -Encoding UTF8
+
+      - name: Generate Windows resources (.syso)
+        run: go-winres make --in winres/winres.json
+
       - name: Build exe
         shell: pwsh
         run: |
@@ -35,23 +53,21 @@ jobs:
       - name: Install Inno Setup
         shell: pwsh
         run: |
-          $installer = "$env:TEMP\innosetup.exe"
-          Invoke-WebRequest -Uri "https://files.jrsoftware.org/is/6/innosetup-6.3.3.exe" -OutFile $installer
-          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+          $tmp = "$env:TEMP\innosetup.exe"
+          Invoke-WebRequest -Uri "https://files.jrsoftware.org/is/6/innosetup-6.3.3.exe" -OutFile $tmp
+          & $tmp /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
           Start-Sleep -Seconds 5
 
       - name: Patch version in setup.iss
         shell: pwsh
         run: |
           $ver = "${{ steps.ver.outputs.VERSION }}"
-          $iss = Get-Content installer\windows\setup.iss -Raw
+          $iss = Get-Content installer/windows/setup.iss -Raw
           $iss = $iss -replace '#define MyAppVersion ".*"', "#define MyAppVersion `"$ver`""
-          Set-Content installer\windows\setup.iss $iss -Encoding UTF8
+          Set-Content installer/windows/setup.iss $iss -Encoding UTF8
 
       - name: Compile installer
-        shell: pwsh
-        run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\windows\setup.iss
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\windows\setup.iss'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -61,7 +77,7 @@ jobs:
             dist/pycalendar.exe
             dist/PyCalendarSetup-v*.exe
 
-  # ── Linux: build binary + .deb + .tar.gz ────────────────────────────────────
+  # ── Linux: binary + tar.gz + install.sh ─────────────────────────────────────
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -83,7 +99,7 @@ jobs:
         id: ver
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and package
+      - name: Build binary + tar.gz
         run: bash scripts/build-linux.sh "${{ steps.ver.outputs.VERSION }}"
 
       - name: Upload artifacts
@@ -91,15 +107,15 @@ jobs:
         with:
           name: linux
           path: |
-            dist/pycalendar
             dist/pycalendar-*-linux-amd64.tar.gz
-            dist/pycalendar_*_amd64.deb
 
   # ── GitHub Release ───────────────────────────────────────────────────────────
   release:
     needs: [build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: windows
@@ -114,6 +130,13 @@ jobs:
         id: ver
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
+      - name: Stamp install.sh with version
+        run: |
+          VER="${{ steps.ver.outputs.VERSION }}"
+          sed "s|PYCALENDAR_VERSION:-}|PYCALENDAR_VERSION:-$VER}|" \
+            scripts/install.sh > dist/install.sh
+          chmod +x dist/install.sh
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -125,4 +148,4 @@ jobs:
             dist/windows/PyCalendarSetup-v*.exe
             dist/windows/pycalendar.exe
             dist/linux/pycalendar-*-linux-amd64.tar.gz
-            dist/linux/pycalendar_*_amd64.deb
+            dist/install.sh

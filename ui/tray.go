@@ -14,6 +14,17 @@ import (
 
 var embeddedDaemon *daemon.Daemon
 
+var trayIconPNG []byte
+
+// SetTrayIconData passes the embedded icon bytes from the main package.
+func SetTrayIconData(data []byte) { trayIconPNG = data }
+
+func setTrayIcon() {
+	if len(trayIconPNG) > 0 {
+		systray.SetIcon(trayIconPNG)
+	}
+}
+
 // RunTray initialises the database, then starts the system tray event loop.
 // This function blocks until the user quits.
 func RunTray() {
