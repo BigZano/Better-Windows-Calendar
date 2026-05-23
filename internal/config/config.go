@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -104,8 +105,25 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// ValidateWebhookURL returns an error if url is non-empty and not a valid HTTPS URL.
+func ValidateWebhookURL(url string) error {
+	if url == "" {
+		return nil
+	}
+	if !strings.HasPrefix(url, "https://") {
+		return fmt.Errorf("webhook URL must start with https://")
+	}
+	return nil
+}
+
 // Save writes cfg to the config file, creating it if necessary.
+// Returns an error if MobilePush is enabled with an invalid webhook URL.
 func Save(cfg Config) error {
+	if cfg.MobilePush.Enabled {
+		if err := ValidateWebhookURL(cfg.MobilePush.WebhookURL); err != nil {
+			return fmt.Errorf("invalid mobile push config: %w", err)
+		}
+	}
 	path, err := GetConfigPath()
 	if err != nil {
 		return err

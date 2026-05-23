@@ -3,14 +3,13 @@ package daemon
 import (
 	"fmt"
 	"log/slog"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"pycalendar/internal/api"
 	"pycalendar/internal/config"
 	"pycalendar/internal/notifier"
+	"pycalendar/internal/push"
 )
 
 // Daemon polls for due reminders and dispatches notifications.
@@ -100,40 +99,14 @@ func (d *Daemon) checkReminders() {
 		d.notified[e.ID] = struct{}{}
 		d.mu.Unlock()
 
-		go d.sendMobilePush(cfg, e, title, msg)
-	}
-}
-
-func (d *Daemon) sendMobilePush(cfg config.Config, e api.Event, title, body string) {
-	if !cfg.MobilePush.Enabled {
-		return
-	}
-	url := cfg.MobilePush.WebhookURL
-	if url == "" {
-		return
-	}
-	// SSRF guard: only allow HTTPS webhooks.
-	if !strings.HasPrefix(url, "https://") {
-		slog.Warn("mobile push webhook must use https, skipping", "url", url)
-		return
-	}
-
-	payload := fmt.Sprintf(
-		`{"title":%q,"body":%q,"event_id":%d,"timestamp":%d}`,
-		title, body, e.ID, e.StartTS,
-	)
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(url, "application/json", strings.NewReader(payload))
-	if err != nil {
-		slog.Error("mobile push failed", "err", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		slog.Info("sent mobile push", "event_id", e.ID)
-	} else {
-		slog.Warn("mobile push non-200", "status", resp.StatusCode)
+		if cfg.MobilePush.Enabled && cfg.MobilePush.WebhookURL != "" {
+			go func(ev api.Event, t, b string) {
+				if err := push.Send(cfg.MobilePush.WebhookURL, t, b, ev); err != nil {
+					slog.Error("mobile push failed", "event_id", ev.ID, "err", err)
+				} else {
+					slog.Info("sent mobile push", "event_id", ev.ID)
+				}
+			}(e, title, msg)
+		}
 	}
 }

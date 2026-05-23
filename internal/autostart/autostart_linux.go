@@ -14,7 +14,7 @@ const daemonServiceTemplate = `[Unit]
 Description=PyCalendar Notification Daemon
 
 [Service]
-ExecStart=%s --mode daemon
+ExecStart="%s" --mode daemon
 Restart=on-failure
 RestartSec=5
 
@@ -26,7 +26,7 @@ const trayDesktopTemplate = `[Desktop Entry]
 Type=Application
 Name=PyCalendar
 Comment=Calendar with tray icon
-Exec=%s --mode tray
+Exec="%s" --mode tray
 Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true

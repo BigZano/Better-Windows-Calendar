@@ -5,6 +5,7 @@ package autostart
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -23,7 +24,10 @@ func Enable(execPath string) error {
 	}
 	defer k.Close()
 
-	value := `"` + execPath + `" --mode daemon`
+	// Double-quote is illegal in Windows file paths, but strip any defensively
+	// so an unexpected execPath never breaks the registry value's cmd quoting.
+	safe := strings.ReplaceAll(execPath, `"`, "")
+	value := `"` + safe + `" --mode daemon`
 	if err := k.SetStringValue(valueName, value); err != nil {
 		return fmt.Errorf("write registry value: %w", err)
 	}
