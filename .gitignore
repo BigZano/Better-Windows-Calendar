@@ -9,3 +9,4 @@ wheels/
 # Virtual environments
 .venv
 SCAFFOLD_IMPLEMENTATION_GUIDE.md
+dist/
