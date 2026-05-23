@@ -16,7 +16,9 @@ import (
 // that the UI can fetch the master for editing. Full scope-dialog exception
 // handling is deferred to issue #18.
 func expandEvents(raw []Event, earlyMasters []Event, windowStart, windowEnd time.Time) []Event {
-	// Build exception map: parentID → set of start_ts values covered by DB exception rows.
+	// Build exception map: parentID → set of LOCAL day-start timestamps covered by exception rows.
+	// Day-based matching lets users reschedule individual occurrences (e.g. 2 PM → 3 PM same day)
+	// without generating a duplicate virtual occurrence for the original time.
 	exDates := make(map[int64]map[int64]bool)
 	for _, e := range raw {
 		if e.ParentEventID.Valid {
@@ -24,7 +26,7 @@ func expandEvents(raw []Event, earlyMasters []Event, windowStart, windowEnd time
 			if exDates[pid] == nil {
 				exDates[pid] = make(map[int64]bool)
 			}
-			exDates[pid][e.StartTS] = true
+			exDates[pid][localDayKey(e.StartTS)] = true
 		}
 	}
 
@@ -89,8 +91,8 @@ func expandMaster(master Event, windowStart, windowEnd time.Time, exDates map[in
 		if ts == master.StartTS {
 			continue
 		}
-		// Skip dates covered by a real exception row.
-		if m, ok := exDates[master.ID]; ok && m[ts] {
+		// Skip dates covered by a real exception row (day-based match).
+		if m, ok := exDates[master.ID]; ok && m[localDayKey(ts)] {
 			continue
 		}
 
@@ -107,6 +109,14 @@ func expandMaster(master Event, windowStart, windowEnd time.Time, exDates map[in
 		result = append(result, occ)
 	}
 	return result
+}
+
+// localDayKey returns the Unix timestamp of the LOCAL midnight for the given ts,
+// used for day-based exception matching so that rescheduled occurrences (same day,
+// different time) still suppress the original virtual occurrence.
+func localDayKey(ts int64) int64 {
+	t := time.Unix(ts, 0).Local()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local).Unix()
 }
 
 // queryEarlyRecurringMasters returns recurring master events (no parent) whose

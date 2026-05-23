@@ -39,6 +39,7 @@ func onReady() {
 
 	mOpen := systray.AddMenuItem("Open Calendar", "Show the calendar window")
 	mAdd := systray.AddMenuItem("Add Event", "Add a new event")
+	mSettings := systray.AddMenuItem("Settings", "Open settings")
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Exit PyCalendar")
 
@@ -49,6 +50,8 @@ func onReady() {
 				ShowCalendarWindow()
 			case <-mAdd.ClickedCh:
 				ShowAddEventDialog(nil)
+			case <-mSettings.ClickedCh:
+				ShowSettingsWindow()
 			case <-mQuit.ClickedCh:
 				systray.Quit()
 				return

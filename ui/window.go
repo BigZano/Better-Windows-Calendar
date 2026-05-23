@@ -17,6 +17,7 @@ import (
 
 	"pycalendar/internal/api"
 	"pycalendar/internal/autostart"
+	"pycalendar/internal/barsetup"
 	"pycalendar/internal/config"
 )
 
@@ -616,33 +617,127 @@ func ShowAddEventDialog(onSuccess func()) {
 
 // ---- Settings window ----
 
-// ShowSettingsWindow opens the full settings window with Notifications, Calendars, and Categories tabs.
+// ShowSettingsWindow opens the settings window with General, Notifications, Appearance,
+// Calendars, and Categories tabs.
 func ShowSettingsWindow() {
 	a := getFyneApp()
 	w := a.NewWindow("Settings")
-	w.Resize(fyne.NewSize(520, 500))
-
-	notifTab := buildNotificationsTab(w)
-	calTab := buildCalendarsTab()
-	catTab := buildCategoriesSettingsTab()
+	w.Resize(fyne.NewSize(520, 520))
 
 	tabs := container.NewAppTabs(
-		container.NewTabItem("Notifications", notifTab),
-		container.NewTabItem("Calendars", calTab),
-		container.NewTabItem("Categories", catTab),
+		container.NewTabItem("General", buildGeneralTab()),
+		container.NewTabItem("Notifications", buildNotificationsTab()),
+		container.NewTabItem("Appearance", buildAppearanceTab()),
+		container.NewTabItem("Calendars", buildCalendarsTab()),
+		container.NewTabItem("Categories", buildCategoriesSettingsTab()),
 	)
 	w.SetContent(tabs)
 	w.Show()
 }
 
 // ShowSettingsDialog is kept for backward compatibility (tray still calls it).
-func ShowSettingsDialog(parent fyne.Window) {
+func ShowSettingsDialog(_ fyne.Window) {
 	ShowSettingsWindow()
+}
+
+// ---- General tab ----
+
+func buildGeneralTab() fyne.CanvasObject {
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Warn("settings: could not load config", "err", err)
+		cfg = config.Default()
+	}
+
+	viewOptions := []string{"Day", "Week", "Month"}
+	viewSelect := widget.NewSelect(viewOptions, nil)
+	switch cfg.UI.DefaultView {
+	case "week":
+		viewSelect.SetSelected("Week")
+	case "month":
+		viewSelect.SetSelected("Month")
+	default:
+		viewSelect.SetSelected("Day")
+	}
+
+	autostartCheck := widget.NewCheck("Start with system", func(_ bool) {})
+	autostartCheck.SetChecked(autostart.IsEnabled())
+
+	errLabel := canvas.NewText("", color.RGBA{R: 200, A: 255})
+
+	saveBtn := widget.NewButton("Save", func() {
+		switch viewSelect.Selected {
+		case "Week":
+			cfg.UI.DefaultView = "week"
+		case "Month":
+			cfg.UI.DefaultView = "month"
+		default:
+			cfg.UI.DefaultView = "day"
+		}
+		if err := config.Save(cfg); err != nil {
+			slog.Error("settings save failed", "err", err)
+			errLabel.Text = "Save failed: " + err.Error()
+			errLabel.Refresh()
+			return
+		}
+		execPath, _ := os.Executable()
+		if autostartCheck.Checked && !autostart.IsEnabled() {
+			if err := autostart.Enable(execPath); err != nil {
+				slog.Error("autostart enable failed", "err", err)
+				errLabel.Text = "Autostart enable failed: " + err.Error()
+				errLabel.Refresh()
+			}
+		} else if !autostartCheck.Checked && autostart.IsEnabled() {
+			if err := autostart.Disable(); err != nil {
+				slog.Error("autostart disable failed", "err", err)
+			}
+		}
+		errLabel.Text = ""
+		errLabel.Refresh()
+	})
+
+	barStatusLabel := canvas.NewText("", color.RGBA{R: 100, G: 200, B: 100, A: 255})
+
+	barSetupBtn := widget.NewButton("Set up bar integration", func() {
+		execPath, _ := os.Executable()
+		r := barsetup.RunSetup(execPath)
+		var msgs []string
+		if r.KomorebiBar == barsetup.StatusInstalled {
+			msgs = append(msgs, "komorebi-bar: configured")
+		}
+		if r.Waybar == barsetup.StatusInstalled {
+			msgs = append(msgs, "Waybar: configured")
+		}
+		if r.Polybar == barsetup.StatusInstalled {
+			msgs = append(msgs, "Polybar: configured")
+		}
+		if r.KomorebiBar == barsetup.StatusAlreadySetUp || r.Waybar == barsetup.StatusAlreadySetUp || r.Polybar == barsetup.StatusAlreadySetUp {
+			msgs = append(msgs, "already configured")
+		}
+		if len(msgs) == 0 {
+			barStatusLabel.Color = color.RGBA{R: 180, G: 180, B: 180, A: 255}
+			barStatusLabel.Text = "No supported bar found."
+		} else {
+			barStatusLabel.Color = color.RGBA{R: 100, G: 200, B: 100, A: 255}
+			barStatusLabel.Text = strings.Join(msgs, "; ")
+		}
+		barStatusLabel.Refresh()
+	})
+
+	return container.NewVBox(
+		formRow("Default calendar view:", viewSelect),
+		autostartCheck,
+		errLabel,
+		saveBtn,
+		widget.NewSeparator(),
+		barSetupBtn,
+		barStatusLabel,
+	)
 }
 
 // ---- Notifications tab ----
 
-func buildNotificationsTab(_ fyne.Window) fyne.CanvasObject {
+func buildNotificationsTab() fyne.CanvasObject {
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Warn("settings: could not load config", "err", err)
@@ -659,9 +754,6 @@ func buildNotificationsTab(_ fyne.Window) fyne.CanvasObject {
 	})
 	soundCheck.SetChecked(cfg.Notifications.SoundEnabled)
 
-	autostartCheck := widget.NewCheck("Start with system", func(_ bool) {})
-	autostartCheck.SetChecked(autostart.IsEnabled())
-
 	reminderEntry := widget.NewEntry()
 	reminderEntry.SetText(strconv.Itoa(cfg.Notifications.DefaultReminderMinutes))
 
@@ -672,23 +764,60 @@ func buildNotificationsTab(_ fyne.Window) fyne.CanvasObject {
 		if err := config.Save(cfg); err != nil {
 			slog.Error("settings save failed", "err", err)
 		}
-		execPath, _ := os.Executable()
-		if autostartCheck.Checked && !autostart.IsEnabled() {
-			if err := autostart.Enable(execPath); err != nil {
-				slog.Error("autostart enable failed", "err", err)
-			}
-		} else if !autostartCheck.Checked && autostart.IsEnabled() {
-			if err := autostart.Disable(); err != nil {
-				slog.Error("autostart disable failed", "err", err)
-			}
-		}
 	})
 
 	return container.NewVBox(
 		desktopCheck,
 		soundCheck,
-		autostartCheck,
 		formRow("Default reminder (min):", reminderEntry),
+		saveBtn,
+	)
+}
+
+// ---- Appearance tab ----
+
+func buildAppearanceTab() fyne.CanvasObject {
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = config.Default()
+	}
+
+	themeOptions := []string{"System", "Light (coming soon)", "Dark (coming soon)", "Retro (coming soon)"}
+	themeSelect := widget.NewSelect(themeOptions, nil)
+	switch cfg.UI.Theme {
+	case "light":
+		themeSelect.SetSelected("Light (coming soon)")
+	case "dark":
+		themeSelect.SetSelected("Dark (coming soon)")
+	case "retro":
+		themeSelect.SetSelected("Retro (coming soon)")
+	default:
+		themeSelect.SetSelected("System")
+	}
+
+	note := widget.NewLabel("Light, Dark, and Retro themes are coming in a future update.")
+	note.TextStyle = fyne.TextStyle{Italic: true}
+	note.Wrapping = fyne.TextWrapWord
+
+	saveBtn := widget.NewButton("Save", func() {
+		switch themeSelect.Selected {
+		case "Light (coming soon)":
+			cfg.UI.Theme = "light"
+		case "Dark (coming soon)":
+			cfg.UI.Theme = "dark"
+		case "Retro (coming soon)":
+			cfg.UI.Theme = "retro"
+		default:
+			cfg.UI.Theme = "system"
+		}
+		if err := config.Save(cfg); err != nil {
+			slog.Error("settings save failed", "err", err)
+		}
+	})
+
+	return container.NewVBox(
+		formRow("Theme:", themeSelect),
+		note,
 		saveBtn,
 	)
 }
@@ -702,6 +831,36 @@ func buildCalendarsTab() fyne.CanvasObject {
 	var rebuild func()
 	rebuild = func() {
 		listBox.Objects = nil
+
+		cfg, err := config.Load()
+		if err != nil {
+			cfg = config.Default()
+		}
+		muteSet := make(map[int64]bool, len(cfg.UI.MuteInviteCalendars))
+		for _, id := range cfg.UI.MuteInviteCalendars {
+			muteSet[id] = true
+		}
+
+		setMuted := func(calID int64, muted bool) {
+			c2, err := config.Load()
+			if err != nil {
+				c2 = config.Default()
+			}
+			result := make([]int64, 0, len(c2.UI.MuteInviteCalendars))
+			for _, id := range c2.UI.MuteInviteCalendars {
+				if id != calID {
+					result = append(result, id)
+				}
+			}
+			if muted {
+				result = append(result, calID)
+			}
+			c2.UI.MuteInviteCalendars = result
+			if err := config.Save(c2); err != nil {
+				slog.Error("save mute calendar pref", "err", err)
+			}
+		}
+
 		cals, err := api.GetCalendars()
 		if err != nil {
 			slog.Error("load calendars", "err", err)
@@ -716,6 +875,11 @@ func buildCalendarsTab() fyne.CanvasObject {
 			})
 			visCheck.SetChecked(isCalendarVisible(c.ID))
 
+			muteCheck := widget.NewCheck("Mute invites", func(muted bool) {
+				setMuted(c.ID, muted)
+			})
+			muteCheck.SetChecked(muteSet[c.ID])
+
 			nameLabel := widget.NewLabel(c.Name)
 
 			editBtn := widget.NewButton("Edit", func() {
@@ -728,7 +892,7 @@ func buildCalendarsTab() fyne.CanvasObject {
 				deleteBtn.Disable() // protect the default Local calendar
 			}
 
-			row := container.NewHBox(visCheck, colorDot, nameLabel, editBtn, deleteBtn)
+			row := container.NewHBox(visCheck, colorDot, nameLabel, muteCheck, editBtn, deleteBtn)
 			listBox.Add(row)
 		}
 		listBox.Refresh()
