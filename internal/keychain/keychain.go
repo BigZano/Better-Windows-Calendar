@@ -37,11 +37,10 @@ func Delete(service, account string) error {
 // DeleteAll removes every keychain entry recorded in credential_index.
 // Called during uninstall to leave no orphaned credentials.
 func DeleteAll() error {
-	db, err := storage.Open(5)
+	db, err := storage.Pool()
 	if err != nil {
 		return err
 	}
-	defer db.Close()
 
 	rows, err := db.Query(`SELECT service, account FROM credential_index`)
 	if err != nil {
@@ -72,11 +71,10 @@ func DeleteAll() error {
 }
 
 func recordIndex(service, account string) error {
-	db, err := storage.Open(5)
+	db, err := storage.Pool()
 	if err != nil {
 		return err
 	}
-	defer db.Close()
 
 	_, err = db.Exec(
 		`INSERT OR IGNORE INTO credential_index (service, account, created_ts) VALUES (?, ?, ?)`,
@@ -86,11 +84,10 @@ func recordIndex(service, account string) error {
 }
 
 func removeIndex(service, account string) error {
-	db, err := storage.Open(5)
+	db, err := storage.Pool()
 	if err != nil {
 		return err
 	}
-	defer db.Close()
 
 	_, err = db.Exec(`DELETE FROM credential_index WHERE service = ? AND account = ?`, service, account)
 	return err

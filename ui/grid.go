@@ -108,17 +108,25 @@ func (g *TimeGridWidget) Tapped(ev *fyne.PointEvent) {
 // ---- renderer ----
 
 type timeGridRenderer struct {
-	grid    *TimeGridWidget
-	objects []fyne.CanvasObject
+	grid     *TimeGridWidget
+	objects  []fyne.CanvasObject
+	lastSize fyne.Size
+	dirty    bool
 }
 
 func (r *timeGridRenderer) Layout(size fyne.Size) {
+	if !r.dirty && r.objects != nil && size == r.lastSize {
+		return
+	}
+	r.dirty = false
+	r.lastSize = size
 	r.rebuild(size)
 }
 
 func (r *timeGridRenderer) MinSize() fyne.Size { return r.grid.MinSize() }
 
 func (r *timeGridRenderer) Refresh() {
+	r.dirty = true
 	canvas.Refresh(r.grid)
 }
 

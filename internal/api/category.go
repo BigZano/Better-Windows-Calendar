@@ -23,7 +23,7 @@ func CreateCategory(name, color string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer db.Close()
+
 
 	res, err := db.Exec(`INSERT INTO categories (name, color) VALUES (?, ?)`, name, color)
 	if err != nil {
@@ -43,7 +43,7 @@ func GetCategories() ([]Category, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+
 
 	rows, err := db.Query(`SELECT id, name, color FROM categories ORDER BY name ASC`)
 	if err != nil {
@@ -68,7 +68,7 @@ func DeleteCategory(id int64) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -92,7 +92,7 @@ func AddEventCategory(eventID, categoryID int64) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	_, err = db.Exec(
 		`INSERT OR IGNORE INTO event_categories (event_id, category_id) VALUES (?, ?)`,
@@ -110,7 +110,7 @@ func RemoveEventCategory(eventID, categoryID int64) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	_, err = db.Exec(
 		`DELETE FROM event_categories WHERE event_id = ? AND category_id = ?`,
@@ -128,7 +128,7 @@ func GetEventCategories(eventID int64) ([]Category, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+
 
 	rows, err := db.Query(`
 		SELECT c.id, c.name, c.color
@@ -158,7 +158,7 @@ func SetEventCategories(eventID int64, categoryIDs []int64) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -205,7 +205,7 @@ func EnrichEventsWithCategories(events []Event) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	placeholders := strings.Repeat("?,", len(ids))
 	placeholders = placeholders[:len(placeholders)-1]
@@ -251,7 +251,7 @@ func GetEventsByCategory(categoryID int64) ([]Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+
 
 	rows, err := db.Query(`
 		SELECT e.id, e.title, e.start_ts, e.end_ts, e.timezone, e.notes, e.reminder_ts,

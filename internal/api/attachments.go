@@ -45,7 +45,7 @@ func AddAttachment(eventID int64, label, rawURL string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer db.Close()
+
 
 	res, err := db.Exec(
 		`INSERT INTO attachments (event_id, filename, url) VALUES (?, ?, ?)`,
@@ -68,7 +68,7 @@ func GetAttachments(eventID int64) ([]Attachment, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+
 
 	rows, err := db.Query(
 		`SELECT id, event_id, filename, url FROM attachments WHERE event_id = ? ORDER BY id ASC`,
@@ -100,7 +100,7 @@ func DeleteAttachment(id int64) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	if _, err := db.Exec(`DELETE FROM attachments WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("delete attachment %d: %w", id, err)

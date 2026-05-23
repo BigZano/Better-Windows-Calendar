@@ -34,6 +34,11 @@ func RunTray() {
 
 	a := getFyneApp()
 
+	// Show one-time setup wizard on first launch.
+	if cfg, err := config.Load(); err == nil && !cfg.UI.FirstRunComplete {
+		ShowFirstRunWizard()
+	}
+
 	if len(trayIconPNG) > 0 {
 		iconRes := fyne.NewStaticResource("icon.png", trayIconPNG)
 		a.SetIcon(iconRes)

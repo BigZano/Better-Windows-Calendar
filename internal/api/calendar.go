@@ -35,7 +35,7 @@ func CreateCalendar(name, color, calType string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer db.Close()
+
 
 	res, err := db.Exec(
 		`INSERT INTO calendars (name, color, type, created_ts) VALUES (?, ?, ?, ?)`,
@@ -58,7 +58,7 @@ func GetCalendars() ([]Calendar, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+
 
 	rows, err := db.Query(`
 		SELECT id, name, color, type, sync_url, username, credential_key,
@@ -103,7 +103,7 @@ func UpdateCalendar(id int64, fields map[string]any) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	_, err = db.Exec(`UPDATE calendars SET `+strings.Join(setClauses, ", ")+` WHERE id = ?`, args...)
 	if err != nil {
@@ -119,7 +119,7 @@ func DeleteCalendar(id int64) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	_, err = db.Exec(`DELETE FROM calendars WHERE id = ?`, id)
 	if err != nil {

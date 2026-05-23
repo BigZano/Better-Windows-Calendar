@@ -9,7 +9,19 @@ PyCalendar is a Go desktop calendar application (rewritten from Python — the n
 ## Build & Run
 
 ```powershell
-# Build
+# Dev build — suppresses CMD window, outputs pycalendar.exe to repo root.
+# Use this, not bare 'go build .' — the -H windowsgui linker flag is required
+# to prevent a console window from appearing; there is no way to encode it in
+# Go source files, so it must be passed at build time.
+.\build.ps1                          # root shortcut
+.\scripts\build-dev.ps1              # same thing
+make build                           # if GNU make is available
+
+# Release build — stripped binary → dist\pycalendar.exe
+.\scripts\build-windows.ps1 [-Version "1.2.3"] [-Installer]
+make release VERSION=1.2.3
+
+# Check all packages compile (no binary produced)
 go build ./...
 
 # Run in each mode

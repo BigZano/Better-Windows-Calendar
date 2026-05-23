@@ -54,14 +54,26 @@ func (m *MonthWidget) MinSize() fyne.Size {
 // ---- renderer ----
 
 type monthRenderer struct {
-	mw      *MonthWidget
-	objects []fyne.CanvasObject
+	mw       *MonthWidget
+	objects  []fyne.CanvasObject
+	lastSize fyne.Size
+	dirty    bool
 }
 
-func (r *monthRenderer) Layout(size fyne.Size) { r.rebuild(size) }
-func (r *monthRenderer) MinSize() fyne.Size    { return r.mw.MinSize() }
-func (r *monthRenderer) Refresh()              { canvas.Refresh(r.mw) }
-func (r *monthRenderer) Destroy()              {}
+func (r *monthRenderer) Layout(size fyne.Size) {
+	if !r.dirty && r.objects != nil && size == r.lastSize {
+		return
+	}
+	r.dirty = false
+	r.lastSize = size
+	r.rebuild(size)
+}
+func (r *monthRenderer) MinSize() fyne.Size { return r.mw.MinSize() }
+func (r *monthRenderer) Refresh() {
+	r.dirty = true
+	canvas.Refresh(r.mw)
+}
+func (r *monthRenderer) Destroy() {}
 func (r *monthRenderer) Objects() []fyne.CanvasObject { return r.objects }
 
 func (r *monthRenderer) rebuild(size fyne.Size) {

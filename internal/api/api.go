@@ -55,7 +55,7 @@ func (e Event) StartTime() time.Time {
 }
 
 func openDB() (*sql.DB, error) {
-	return storage.Open(5)
+	return storage.Pool()
 }
 
 func scanEvent(row interface{ Scan(...any) error }) (Event, error) {
@@ -94,7 +94,7 @@ func CreateEvent(
 	if err != nil {
 		return 0, err
 	}
-	defer db.Close()
+
 
 	if calendarID <= 0 {
 		calendarID = 1
@@ -163,7 +163,7 @@ func GetEvent(id int64) (Event, error) {
 	if err != nil {
 		return Event{}, err
 	}
-	defer db.Close()
+
 
 	row := db.QueryRow(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
@@ -179,7 +179,7 @@ func GetUpcoming(limit int) ([]Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+
 
 	now := time.Now()
 	// Expand up to 1 year ahead to capture recurring occurrences.
@@ -224,7 +224,7 @@ func GetEvents(startTS, endTS int64) ([]Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+
 
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
@@ -259,7 +259,7 @@ func GetDueReminders(windowSeconds int64) ([]Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+
 
 	now := time.Now().Unix()
 	rows, err := db.Query(`
@@ -313,7 +313,7 @@ func UpdateEvent(id int64, fields map[string]any) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	_, err = db.Exec(`UPDATE events SET `+strings.Join(setClauses, ", ")+` WHERE id = ?`, args...)
 	if err != nil {
@@ -329,7 +329,7 @@ func DeleteEvent(id int64) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	_, err = db.Exec(`DELETE FROM events WHERE id = ?`, id)
 	if err != nil {
@@ -346,7 +346,7 @@ func GetEventsByCalendar(calendarID, startTS, endTS int64) ([]Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+
 
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
@@ -403,7 +403,7 @@ func CountEventsForCalendar(calID int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer db.Close()
+
 
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE calendar_id = ?`, calID).Scan(&count); err != nil {
@@ -418,7 +418,7 @@ func ReassignCalendarEvents(fromCalID, toCalID int64) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	if _, err := db.Exec(`UPDATE events SET calendar_id = ? WHERE calendar_id = ?`, toCalID, fromCalID); err != nil {
 		return fmt.Errorf("reassign calendar events %d→%d: %w", fromCalID, toCalID, err)
@@ -432,7 +432,7 @@ func DeleteEventsByCalendar(calID int64) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 
 	if _, err := db.Exec(`DELETE FROM events WHERE calendar_id = ?`, calID); err != nil {
 		return fmt.Errorf("delete events for calendar %d: %w", calID, err)

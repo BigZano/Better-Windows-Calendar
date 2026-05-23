@@ -12,11 +12,11 @@ import (
 
 const (
 	runKey    = `Software\Microsoft\Windows\CurrentVersion\Run`
-	valueName = "PyCalendarDaemon"
+	valueName = "PyCalendar"
 )
 
 // Enable writes an autostart registry entry under HKCU\...\Run so the
-// daemon launches at login.
+// tray (which embeds the reminder daemon) launches at login.
 func Enable(execPath string) error {
 	k, err := registry.OpenKey(registry.CURRENT_USER, runKey, registry.SET_VALUE)
 	if err != nil {
@@ -27,7 +27,7 @@ func Enable(execPath string) error {
 	// Double-quote is illegal in Windows file paths, but strip any defensively
 	// so an unexpected execPath never breaks the registry value's cmd quoting.
 	safe := strings.ReplaceAll(execPath, `"`, "")
-	value := `"` + safe + `" --mode daemon`
+	value := `"` + safe + `" --mode tray`
 	if err := k.SetStringValue(valueName, value); err != nil {
 		return fmt.Errorf("write registry value: %w", err)
 	}

@@ -26,7 +26,7 @@ func DeleteExceptionsForMaster(masterID int64) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 	_, err = db.Exec(`DELETE FROM events WHERE parent_event_id = ?`, masterID)
 	return err
 }
@@ -37,7 +37,7 @@ func DeleteExceptionsOnOrAfter(masterID, fromTS int64) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
 	_, err = db.Exec(
 		`DELETE FROM events WHERE parent_event_id = ? AND start_ts >= ?`,
 		masterID, fromTS,
@@ -56,7 +56,7 @@ func CreateExceptionEvent(masterID int64, title string, startTime time.Time,
 	if err != nil {
 		return 0, err
 	}
-	defer db.Close()
+
 
 	now := time.Now().Unix()
 	startTS := startTime.Unix()

@@ -34,6 +34,7 @@ type UIConfig struct {
 	ShowWeekNumbers     bool    `toml:"show_week_numbers"`
 	MuteInviteCalendars []int64 `toml:"mute_invite_calendars"` // calendar IDs with invite prompts silenced
 	HiddenCalendars     []int64 `toml:"hidden_calendars"`      // calendar IDs hidden in all grid views
+	FirstRunComplete    bool    `toml:"first_run_complete"`    // true after setup wizard has been shown
 }
 
 // Default returns the default configuration.
@@ -76,6 +77,26 @@ func GetConfigPath() (string, error) {
 		return "", fmt.Errorf("cannot create config directory: %w", err)
 	}
 	return filepath.Join(base, "config.toml"), nil
+}
+
+// GetLogPath returns the platform-appropriate path for the application log file.
+func GetLogPath() (string, error) {
+	var base string
+	if dir, ok := os.LookupEnv("LOCALAPPDATA"); ok && dir != "" {
+		base = filepath.Join(dir, "PyCalendar", "PyCalendar")
+	} else if dir, ok := os.LookupEnv("XDG_DATA_HOME"); ok && dir != "" {
+		base = filepath.Join(dir, "PyCalendar")
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine home directory: %w", err)
+		}
+		base = filepath.Join(home, ".local", "share", "PyCalendar")
+	}
+	if err := os.MkdirAll(base, 0700); err != nil {
+		return "", fmt.Errorf("cannot create log directory: %w", err)
+	}
+	return filepath.Join(base, "pycalendar.log"), nil
 }
 
 // Load reads the config file, returning defaults if it does not exist.

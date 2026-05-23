@@ -5,6 +5,9 @@ import (
 	"image/color"
 	"log/slog"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -13,12 +16,14 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
 	"pycalendar/internal/api"
 	"pycalendar/internal/autostart"
 	"pycalendar/internal/barsetup"
 	"pycalendar/internal/config"
+	"pycalendar/internal/icsimport"
 )
 
 var fyneApp fyne.App
@@ -59,7 +64,7 @@ func ShowCalendarWindow() {
 
 	dayView, dayReload := buildDayView(now, w)
 	weekView, weekReload := buildWeekView(now, w)
-	monthView, monthReload := buildMonthView(now.Year(), int(now.Month()), loadMonthEvents(now.Year(), int(now.Month())))
+	monthView, monthReload := buildMonthView(now.Year(), int(now.Month()), nil)
 
 	allReload := func() {
 		dayReload()
@@ -133,6 +138,9 @@ func ShowCalendarWindow() {
 	w.SetCloseIntercept(func() { w.Hide() })
 	w.Show()
 	w.RequestFocus()
+
+	// Load event data after the window is visible to avoid blocking the open.
+	go allReload()
 }
 
 // buildCalendarSidebar returns a sidebar widget listing all calendars with visibility
@@ -179,8 +187,8 @@ func buildCalendarSidebar(onVisibilityChange func()) (fyne.CanvasObject, func())
 // ---- Day view ----
 
 func buildDayView(day time.Time, _ fyne.Window) (fyne.CanvasObject, func()) {
-	cals, _ := api.GetCalendars()
-	events := loadDayEvents(day)
+	var cals []api.Calendar
+	var events []api.Event
 
 	allDayBox := container.NewVBox()
 	refreshAllDay := func(evts []api.Event) {
@@ -262,8 +270,8 @@ func buildWeekView(anyDay time.Time, _ fyne.Window) (fyne.CanvasObject, func()) 
 		dates[i] = weekStart.AddDate(0, 0, i)
 	}
 
-	cals, _ := api.GetCalendars()
-	events := loadWeekEvents(weekStart)
+	var cals []api.Calendar
+	var events []api.Event
 
 	allDayBox := container.NewVBox()
 	refreshAllDay := func(evts []api.Event) {
@@ -647,6 +655,8 @@ func ShowSettingsWindow() {
 		container.NewTabItem("Appearance", buildAppearanceTab()),
 		container.NewTabItem("Calendars", buildCalendarsTab()),
 		container.NewTabItem("Categories", buildCategoriesSettingsTab()),
+		container.NewTabItem("Logs", buildLogsTab()),
+		container.NewTabItem("Import", buildImportTab()),
 	)
 	w.SetContent(tabs)
 	w.Show()
@@ -1141,3 +1151,138 @@ func ShowEditCalendarWindow(cal api.Calendar, onSave func()) {
 	w.Show()
 }
 
+// ---- Logs tab ----
+
+func buildLogsTab() fyne.CanvasObject {
+	logPath, err := config.GetLogPath()
+	if err != nil {
+		return widget.NewLabel("Cannot determine log path: " + err.Error())
+	}
+
+	entry := widget.NewMultiLineEntry()
+	entry.Disable()
+	entry.Wrapping = fyne.TextWrapOff
+
+	load := func() {
+		data, readErr := os.ReadFile(logPath)
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				entry.SetText("(no log entries yet — logs appear here after the app runs for a moment)")
+			} else {
+				entry.SetText("error reading log: " + readErr.Error())
+			}
+			return
+		}
+		lines := strings.Split(string(data), "\n")
+		const maxLines = 500
+		if len(lines) > maxLines {
+			lines = lines[len(lines)-maxLines:]
+		}
+		entry.SetText(strings.Join(lines, "\n"))
+	}
+	load()
+
+	refreshBtn := widget.NewButton("Refresh", load)
+
+	openBtn := widget.NewButton("Open log folder", func() {
+		dir := filepath.Dir(logPath)
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "windows":
+			cmd = exec.Command("explorer", dir)
+		case "darwin":
+			cmd = exec.Command("open", dir)
+		default:
+			cmd = exec.Command("xdg-open", dir)
+		}
+		if startErr := cmd.Start(); startErr != nil {
+			slog.Warn("open log folder failed", "err", startErr)
+		}
+	})
+
+	pathLbl := widget.NewLabel(logPath)
+	pathLbl.Wrapping = fyne.TextWrapBreak
+
+	header := container.NewVBox(
+		container.NewHBox(
+			widget.NewLabelWithStyle("Log file:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			refreshBtn,
+			openBtn,
+		),
+		pathLbl,
+		widget.NewSeparator(),
+	)
+
+	return container.NewBorder(header, nil, nil, nil, container.NewVScroll(entry))
+}
+
+// ---- Import tab ----
+
+func buildImportTab() fyne.CanvasObject {
+	a := getFyneApp()
+
+	cals, _ := api.GetCalendars()
+	calNames := make([]string, len(cals))
+	calIDs := make([]int64, len(cals))
+	for i, c := range cals {
+		calNames[i] = c.Name
+		calIDs[i] = c.ID
+	}
+	if len(calNames) == 0 {
+		calNames = []string{"Local"}
+		calIDs = []int64{1}
+	}
+
+	calSelect := widget.NewSelect(calNames, nil)
+	calSelect.SetSelectedIndex(0)
+
+	statusLbl := canvas.NewText("", color.RGBA{R: 200, G: 200, B: 200, A: 255})
+
+	importBtn := widget.NewButton("Choose .ics file…", func() {
+		dialog.ShowFileOpen(func(f fyne.URIReadCloser, err error) {
+			if err != nil || f == nil {
+				return
+			}
+			defer f.Close()
+
+			calID := calIDs[0]
+			if idx := calSelect.SelectedIndex(); idx >= 0 && idx < len(calIDs) {
+				calID = calIDs[idx]
+			}
+
+			res, impErr := icsimport.Import(f, calID)
+			if impErr != nil {
+				statusLbl.Color = color.RGBA{R: 220, G: 60, B: 60, A: 255}
+				statusLbl.Text = "Import failed: " + impErr.Error()
+			} else if len(res.Errors) > 0 {
+				statusLbl.Color = color.RGBA{R: 220, G: 160, B: 40, A: 255}
+				statusLbl.Text = fmt.Sprintf("Imported %d, skipped %d (%d errors — see logs)",
+					res.Imported, res.Skipped, len(res.Errors))
+			} else {
+				statusLbl.Color = color.RGBA{R: 80, G: 200, B: 80, A: 255}
+				statusLbl.Text = fmt.Sprintf("Imported %d event(s) successfully", res.Imported)
+			}
+			statusLbl.Refresh()
+
+			if res.Imported > 0 && calendarWindowReload != nil {
+				calendarWindowReload()
+			}
+		}, a.Driver().AllWindows()[0])
+	})
+	importBtn.Importance = widget.HighImportance
+
+	desc := widget.NewLabel(
+		"Import events from any app that exports .ics files:\n" +
+			"Google Calendar, Outlook, Apple Calendar, Thunderbird, etc.\n\n" +
+			"Events are added to the selected calendar. Duplicates are not detected — " +
+			"importing the same file twice will create duplicate events.")
+	desc.Wrapping = fyne.TextWrapWord
+
+	return container.NewVBox(
+		desc,
+		widget.NewSeparator(),
+		formRow("Target calendar:", calSelect),
+		importBtn,
+		statusLbl,
+	)
+}

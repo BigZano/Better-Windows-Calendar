@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"time"
@@ -15,6 +16,22 @@ import (
 	"pycalendar/internal/storage"
 	"pycalendar/ui"
 )
+
+// setupLogFile opens (or creates) the log file and redirects slog to write to
+// both stderr and the file. Returns the open file so the caller can defer Close.
+func setupLogFile() *os.File {
+	logPath, err := config.GetLogPath()
+	if err != nil {
+		return nil
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil
+	}
+	w := io.MultiWriter(os.Stderr, f)
+	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	return f
+}
 
 func main() {
 	mode := flag.String("mode", "tray", "Run mode: tray | daemon | bar | cli | uninstall")
@@ -31,9 +48,15 @@ func main() {
 
 	switch *mode {
 	case "tray":
+		if f := setupLogFile(); f != nil {
+			defer f.Close()
+		}
 		ui.RunTray()
 
 	case "daemon":
+		if f := setupLogFile(); f != nil {
+			defer f.Close()
+		}
 		if err := storage.InitDB(); err != nil {
 			slog.Error("init db failed", "err", err)
 			os.Exit(1)

@@ -8,9 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
+)
+
+var (
+	poolMu sync.Mutex
+	poolDB *sql.DB
 )
 
 // GetDBPath returns the platform-appropriate path for the SQLite database file.
@@ -81,20 +87,39 @@ func Open(maxRetries int) (*sql.DB, error) {
 	return db, nil
 }
 
-// InitDB runs all pending schema migrations in version order.
+// Pool returns the shared long-lived *sql.DB, opening it on first call.
+// InitDB must have been called first to ensure the schema is up to date.
+func Pool() (*sql.DB, error) {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	if poolDB != nil {
+		return poolDB, nil
+	}
+	db, err := Open(5)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	poolDB = db
+	return poolDB, nil
+}
+
+// InitDB runs all pending schema migrations in version order and seeds Pool.
 func InitDB() error {
 	db, err := Open(5)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
 
 	if err := ensureSchemaVersionTable(db); err != nil {
+		db.Close()
 		return err
 	}
 
 	current, err := currentVersion(db)
 	if err != nil {
+		db.Close()
 		return err
 	}
 
@@ -104,16 +129,25 @@ func InitDB() error {
 		}
 		slog.Info("applying migration", "version", m.version)
 		if err := m.run(db); err != nil {
+			db.Close()
 			return fmt.Errorf("migration v%d: %w", m.version, err)
 		}
 		if _, err := db.Exec(
 			`INSERT INTO schema_version (version, applied_at) VALUES (?, ?)`,
 			m.version, time.Now().Unix(),
 		); err != nil {
+			db.Close()
 			return fmt.Errorf("record migration v%d: %w", m.version, err)
 		}
 		slog.Info("migration applied", "version", m.version)
 	}
+
+	// Seed the shared pool with the already-open, migrated connection.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	poolMu.Lock()
+	poolDB = db
+	poolMu.Unlock()
 	return nil
 }
 
