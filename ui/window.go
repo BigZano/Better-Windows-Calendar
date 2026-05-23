@@ -34,10 +34,24 @@ func getFyneApp() fyne.App {
 // Set by ShowCalendarWindow so the sidebar refreshes automatically.
 var onCalendarsChanged func()
 
+var calendarWindow fyne.Window
+var calendarWindowReload func()
+
 // ShowCalendarWindow opens (or brings to front) the main calendar window.
+// Subsequent calls reuse the same window.
 func ShowCalendarWindow() {
+	if calendarWindow != nil {
+		if calendarWindowReload != nil {
+			calendarWindowReload()
+		}
+		calendarWindow.Show()
+		calendarWindow.RequestFocus()
+		return
+	}
+
 	a := getFyneApp()
 	w := a.NewWindow("PyCalendar")
+	calendarWindow = w
 	w.Resize(fyne.NewSize(1050, 650))
 
 	cfg, _ := config.Load()
@@ -113,9 +127,12 @@ func ShowCalendarWindow() {
 	split := container.NewHSplit(sidebar, main)
 	split.SetOffset(0.18)
 
+	calendarWindowReload = allReload
+
 	w.SetContent(split)
 	w.SetCloseIntercept(func() { w.Hide() })
 	w.Show()
+	w.RequestFocus()
 }
 
 // buildCalendarSidebar returns a sidebar widget listing all calendars with visibility

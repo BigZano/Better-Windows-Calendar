@@ -4,9 +4,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/getlantern/systray"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/driver/desktop"
 
-	"pycalendar/internal/api"
 	"pycalendar/internal/config"
 	"pycalendar/internal/daemon"
 	"pycalendar/internal/storage"
@@ -19,14 +19,8 @@ var trayIconPNG []byte
 // SetTrayIconData passes the embedded icon bytes from the main package.
 func SetTrayIconData(data []byte) { trayIconPNG = data }
 
-func setTrayIcon() {
-	if len(trayIconPNG) > 0 {
-		systray.SetIcon(trayIconPNG)
-	}
-}
-
-// RunTray initialises the database, then starts the system tray event loop.
-// This function blocks until the user quits.
+// RunTray initialises the database, sets up the system tray via Fyne's
+// desktop.App interface, and runs the Fyne event loop. Blocks until Quit.
 func RunTray() {
 	if err := storage.InitDB(); err != nil {
 		slog.Error("failed to init database", "err", err)
@@ -37,58 +31,45 @@ func RunTray() {
 	} else {
 		InitVisibilityFromConfig(cfg.UI.HiddenCalendars)
 	}
-	systray.Run(onReady, onExit)
-}
 
-func onReady() {
-	systray.SetTitle("PyCalendar")
-	systray.SetTooltip("PyCalendar")
-	setTrayIcon()
+	a := getFyneApp()
+
+	if len(trayIconPNG) > 0 {
+		iconRes := fyne.NewStaticResource("icon.png", trayIconPNG)
+		a.SetIcon(iconRes)
+		if desk, ok := a.(desktop.App); ok {
+			desk.SetSystemTrayIcon(iconRes)
+		}
+	}
+
+	if desk, ok := a.(desktop.App); ok {
+		desk.SetSystemTrayMenu(fyne.NewMenu("PyCalendar",
+			fyne.NewMenuItem("Open Calendar", func() {
+				ShowCalendarWindow()
+			}),
+			fyne.NewMenuItem("Add Event", func() {
+				ShowAddEventDialog(nil)
+			}),
+			fyne.NewMenuItem("Settings", func() {
+				ShowSettingsWindow()
+			}),
+			fyne.NewMenuItemSeparator(),
+			fyne.NewMenuItem("Quit", func() {
+				if embeddedDaemon != nil {
+					embeddedDaemon.Stop()
+				}
+				a.Quit()
+			}),
+		))
+	}
 
 	embeddedDaemon = daemon.New(30 * time.Second)
 	go embeddedDaemon.Run()
 
-	mOpen := systray.AddMenuItem("Open Calendar", "Show the calendar window")
-	mAdd := systray.AddMenuItem("Add Event", "Add a new event")
-	mSettings := systray.AddMenuItem("Settings", "Open settings")
-	systray.AddSeparator()
-	mQuit := systray.AddMenuItem("Quit", "Exit PyCalendar")
+	a.Run()
 
-	go func() {
-		for {
-			select {
-			case <-mOpen.ClickedCh:
-				ShowCalendarWindow()
-			case <-mAdd.ClickedCh:
-				ShowAddEventDialog(nil)
-			case <-mSettings.ClickedCh:
-				ShowSettingsWindow()
-			case <-mQuit.ClickedCh:
-				systray.Quit()
-				return
-			}
-		}
-	}()
-
-	go updateTooltip()
-}
-
-func onExit() {
 	if embeddedDaemon != nil {
 		embeddedDaemon.Stop()
 	}
 	slog.Info("tray exiting")
-}
-
-func updateTooltip() {
-	events, err := api.GetUpcoming(5)
-	if err != nil {
-		return
-	}
-	if len(events) == 0 {
-		systray.SetTooltip("PyCalendar — no upcoming events")
-		return
-	}
-	next := events[0]
-	systray.SetTooltip("PyCalendar — next: " + next.Title + " @ " + next.StartTime().Format("15:04 01/02"))
 }

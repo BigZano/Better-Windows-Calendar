@@ -10,3 +10,7 @@ wheels/
 .venv
 SCAFFOLD_IMPLEMENTATION_GUIDE.md
 dist/
+
+# Compiled binaries
+*.exe
+*.exe~
