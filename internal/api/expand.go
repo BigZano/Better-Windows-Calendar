@@ -125,7 +125,7 @@ func queryEarlyRecurringMasters(db *sql.DB, beforeTS int64) []Event {
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
 		       created_ts, updated_ts, recurrence_rule, all_day,
-		       calendar_id, location, url, parent_event_id
+		       calendar_id, location, url, parent_event_id, resource_url
 		FROM events
 		WHERE recurrence_rule IS NOT NULL
 		  AND parent_event_id IS NULL

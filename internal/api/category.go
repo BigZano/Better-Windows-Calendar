@@ -256,7 +256,7 @@ func GetEventsByCategory(categoryID int64) ([]Event, error) {
 	rows, err := db.Query(`
 		SELECT e.id, e.title, e.start_ts, e.end_ts, e.timezone, e.notes, e.reminder_ts,
 		       e.created_ts, e.updated_ts, e.recurrence_rule, e.all_day,
-		       e.calendar_id, e.location, e.url, e.parent_event_id
+		       e.calendar_id, e.location, e.url, e.parent_event_id, e.resource_url
 		FROM events e
 		JOIN event_categories ec ON ec.event_id = e.id
 		WHERE ec.category_id = ?

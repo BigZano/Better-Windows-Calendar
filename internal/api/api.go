@@ -25,6 +25,7 @@ var allowedUpdateFields = map[string]bool{
 	"location":         true,
 	"url":              true,
 	"parent_event_id":  true,
+	"resource_url":     true,
 }
 
 // Event mirrors the events table schema.
@@ -44,6 +45,7 @@ type Event struct {
 	Location       sql.NullString
 	URL            sql.NullString
 	ParentEventID  sql.NullInt64
+	ResourceURL    sql.NullString
 
 	// Categories is populated on-demand by EnrichEventsWithCategories; nil if not loaded.
 	Categories []Category
@@ -65,7 +67,7 @@ func scanEvent(row interface{ Scan(...any) error }) (Event, error) {
 		&e.ID, &e.Title, &e.StartTS, &e.EndTS, &e.Timezone,
 		&e.Notes, &e.ReminderTS, &e.CreatedTS, &e.UpdatedTS,
 		&e.RecurrenceRule, &allDay, &e.CalendarID, &e.Location, &e.URL,
-		&e.ParentEventID,
+		&e.ParentEventID, &e.ResourceURL,
 	)
 	if err != nil {
 		return Event{}, err
@@ -168,7 +170,7 @@ func GetEvent(id int64) (Event, error) {
 	row := db.QueryRow(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
 		       created_ts, updated_ts, recurrence_rule, all_day,
-		       calendar_id, location, url, parent_event_id
+		       calendar_id, location, url, parent_event_id, resource_url
 		FROM events WHERE id = ?`, id)
 	return scanEvent(row)
 }
@@ -188,7 +190,7 @@ func GetUpcoming(limit int) ([]Event, error) {
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
 		       created_ts, updated_ts, recurrence_rule, all_day,
-		       calendar_id, location, url, parent_event_id
+		       calendar_id, location, url, parent_event_id, resource_url
 		FROM events
 		WHERE start_ts >= ?
 		ORDER BY start_ts ASC`, now.Unix())
@@ -229,7 +231,7 @@ func GetEvents(startTS, endTS int64) ([]Event, error) {
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
 		       created_ts, updated_ts, recurrence_rule, all_day,
-		       calendar_id, location, url, parent_event_id
+		       calendar_id, location, url, parent_event_id, resource_url
 		FROM events WHERE start_ts >= ? AND start_ts <= ?
 		ORDER BY start_ts ASC`, startTS, endTS)
 	if err != nil {
@@ -265,7 +267,7 @@ func GetDueReminders(windowSeconds int64) ([]Event, error) {
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
 		       created_ts, updated_ts, recurrence_rule, all_day,
-		       calendar_id, location, url, parent_event_id
+		       calendar_id, location, url, parent_event_id, resource_url
 		FROM events
 		WHERE reminder_ts IS NOT NULL
 		  AND reminder_ts >= ?
@@ -351,7 +353,7 @@ func GetEventsByCalendar(calendarID, startTS, endTS int64) ([]Event, error) {
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
 		       created_ts, updated_ts, recurrence_rule, all_day,
-		       calendar_id, location, url, parent_event_id
+		       calendar_id, location, url, parent_event_id, resource_url
 		FROM events
 		WHERE calendar_id = ? AND start_ts >= ? AND start_ts <= ?
 		ORDER BY start_ts ASC`, calendarID, startTS, endTS)
@@ -376,7 +378,7 @@ func GetEventsByCalendar(calendarID, startTS, endTS int64) ([]Event, error) {
 	earlyRows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
 		       created_ts, updated_ts, recurrence_rule, all_day,
-		       calendar_id, location, url, parent_event_id
+		       calendar_id, location, url, parent_event_id, resource_url
 		FROM events
 		WHERE calendar_id = ? AND recurrence_rule IS NOT NULL
 		  AND parent_event_id IS NULL AND start_ts < ?`, calendarID, startTS)

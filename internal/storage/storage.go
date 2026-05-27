@@ -162,6 +162,7 @@ var migrations = []migration{
 	{version: 1, run: migrateV1},
 	{version: 2, run: migrateV2},
 	{version: 3, run: migrateV3},
+	{version: 4, run: migrateV4},
 }
 
 func migrateV1(db *sql.DB) error {
@@ -278,6 +279,30 @@ func migrateV3(db *sql.DB) error {
 	stmts := []string{
 		`ALTER TABLE events ADD COLUMN parent_event_id INTEGER`,
 		`CREATE INDEX IF NOT EXISTS idx_event_categories_cat ON event_categories(category_id)`,
+	}
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil && !isAlreadyExists(err) {
+			return fmt.Errorf("stmt %q: %w", s[:min(40, len(s))], err)
+		}
+	}
+	return nil
+}
+
+func migrateV4(db *sql.DB) error {
+	stmts := []string{
+		`ALTER TABLE events ADD COLUMN resource_url TEXT`,
+		`CREATE INDEX IF NOT EXISTS idx_events_resource_url ON events(resource_url)`,
+		`CREATE TABLE IF NOT EXISTS conflicts (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			calendar_id INTEGER NOT NULL,
+			event_id    INTEGER NOT NULL,
+			local_json  TEXT    NOT NULL,
+			remote_json TEXT    NOT NULL,
+			detected_at INTEGER NOT NULL,
+			resolved_at INTEGER,
+			resolution  TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_conflicts_calendar ON conflicts(calendar_id, resolved_at)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil && !isAlreadyExists(err) {

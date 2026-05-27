@@ -15,6 +15,25 @@ type Config struct {
 	Notifications NotificationsConfig `toml:"notifications"`
 	MobilePush    MobilePushConfig    `toml:"mobile_push"`
 	UI            UIConfig            `toml:"ui"`
+	OAuth         OAuthConfig         `toml:"oauth"`
+	Sync          SyncConfig          `toml:"sync"`
+}
+
+// OAuthConfig holds optional per-provider client ID overrides.
+// Built-in defaults are shipped in the binary; these override them for power
+// users or enterprise deployments (ADR-0004, ADR-0005).
+type OAuthConfig struct {
+	MicrosoftClientID string `toml:"microsoft_client_id"`
+	GoogleClientID    string `toml:"google_client_id"`
+}
+
+// SyncConfig controls the sync engine behaviour (Milestone 2).
+type SyncConfig struct {
+	// IntervalMinutes is how often SyncAll runs. Default 5, independent of
+	// the 30-second reminder daemon interval (ADR-0002).
+	IntervalMinutes    int    `toml:"interval_minutes"`
+	// ConflictResolution is "remote-wins" (default) or "last-write-wins" (ADR-0007).
+	ConflictResolution string `toml:"conflict_resolution"`
 }
 
 type NotificationsConfig struct {
@@ -54,6 +73,10 @@ func Default() Config {
 			DefaultView:         "day",
 			ShowWeekNumbers:     false,
 			MuteInviteCalendars: nil,
+		},
+		Sync: SyncConfig{
+			IntervalMinutes:    5,
+			ConflictResolution: "remote-wins",
 		},
 	}
 }
