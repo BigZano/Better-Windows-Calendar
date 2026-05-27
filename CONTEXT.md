@@ -125,9 +125,88 @@ Blocked on the Event detail view existing — not low value, just sequentially d
 
 ## Sync
 
-The process of pulling Events from a remote CalDAV or Google Calendar into the local SQLite store, and pushing local changes back. Sync state (sync token, per-resource ETags) is persisted in `sync_state` so incremental syncs are possible.
+The process of pulling Events from a remote CalDAV, Google Calendar, or Outlook Calendar (Microsoft Graph) into the local SQLite store, and pushing local changes back. Sync state (sync token, per-resource ETags) is persisted in `sync_state` so incremental syncs are possible.
 
-**Milestone 2 (sync milestone).** The schema is ready; the sync engine is not. `.ics` file import and `webcal://` link handling are also scoped to this milestone.
+**Milestone 2 (sync milestone).** The schema is ready; the sync engine is not. `.ics` file import is partially implemented; CalDAV and Microsoft Graph adapters are not.
+
+Sync runs on its own goroutine with its own configurable timer (default 5 minutes), independent of the reminder Daemon. See ADR-0002 for the embedded goroutine decision.
+
+---
+
+## Sync Engine
+
+The module responsible for orchestrating Sync for one or all Calendars. Exposes three methods to callers (Daemon, "Sync Now" UI button):
+
+- `Sync(ctx, calendarID) error` — sync a single Calendar
+- `SyncAll(ctx) error` — sync all sync-enabled Calendars
+- `Status(calendarID) SyncStatus` — last sync time, in-progress flag, last error
+
+A companion `SyncEventSource` interface is defined alongside for future event-driven sync (callers type-assert to it when available). Behind the seam the engine dispatches to a protocol **Adapter** (`FetchChanges`, `PushChange`, `DeleteRemote`). CalDAV and Microsoft Graph are distinct Adapters; Google Calendar is a third Adapter, deferred but designed for.
+
+**Do not say:** "sync service", "sync worker". Say: **Sync Engine** or **Adapter**.
+
+---
+
+## SyncState
+
+A typed wrapper around the per-Calendar sync state stored in the `sync_state` table. Exposes `GetETag(resourceURL string) string` and `SetETag(resourceURL, etag string)` methods. The JSON serialization of the underlying ETag map is an implementation detail hidden behind this type — callers never marshal or unmarshal raw JSON.
+
+Also carries the sync token (used for incremental CalDAV and Graph fetches) and `last_sync_at` timestamp.
+
+---
+
+## CredentialStore
+
+The module that manages OAuth tokens and Basic Auth credentials for sync-enabled Calendars. Typed methods per Calendar type:
+
+- `StoreOAuthToken(calendarID, token OAuthToken) error`
+- `GetOAuthToken(calendarID) (OAuthToken, error)`
+- `StoreCalDAV(calendarID, username, password string) error`
+- `GetCalDAV(calendarID) (username, password string, error)`
+
+`OAuthToken` holds `{refresh_token []byte, scope string, obtained_at time.Time}`. The access token is never stored — it is fetched fresh from the provider on every sync operation and zeroed after use (see ADR-0004). All token values are `[]byte`, not `string`, to allow explicit memory zeroing.
+
+OAuth client IDs ship as built-in defaults in the binary. Per-provider overrides live in `config.toml` under `[oauth]` (`microsoft_client_id`, `google_client_id`). The OS keyring (via `internal/keychain`) is the backing store; the `credential_index` table tracks every keyring entry for clean uninstall.
+
+**Do not say:** "credential manager", "token store". Say: **CredentialStore**.
+
+---
+
+## Conflict Queue
+
+The persistent record of sync conflicts that have not yet been reviewed by the user. When both a local Event and its remote counterpart have changed since the last sync, the conflict is written to the `conflicts` table (both versions as JSON blobs) before the default resolution (remote-wins) is applied. The user has a **30-day retention window** to reverse the decision. Entries are pruned on startup after the window expires.
+
+Surfaced in two places:
+1. **Toast notification** at conflict time — "Keep local" / "Accept remote" action buttons.
+2. **Alerts tab** in the main app window — a scrollable list of pending and recently resolved conflicts; badge count in the tray menu.
+
+`last-write-wins` is available as a power-user override via `[sync] conflict_resolution = "last-write-wins"` in `config.toml`. See ADR-0007.
+
+**Do not say:** "conflict log", "merge queue". Say: **Conflict Queue**.
+
+---
+
+## EventPatch
+
+A struct used to partially update an Event. Every field is a pointer; `nil` means "leave this field untouched." `UpdateEvent(id, patch EventPatch)` applies all non-nil fields in a single SQL transaction. Replaces the previous `map[string]any` pattern.
+
+The atomicity guarantee is the primary motivation: the Sync Engine builds one EventPatch from the winning version of a conflicted event and applies it as a single atomic write. See ADR-0006.
+
+---
+
+## Import Dialog
+
+The UI shown when a user opens a `.ics` file via double-click (file association registered in `setup.iss`). Displays:
+
+- Full source file path (non-truncated, selectable)
+- PRODID / organizer from the ICS header
+- Event count and date span ("47 events, Jan 2025 – Dec 2025")
+- Scrollable preview list (title + start date per event)
+- Calendar picker (defaults to Local calendar)
+
+Safeguards: 10MB file size limit (rejected before parsing); warning banner for imports over 50 events; duplicate detection against the target calendar (matching UID or title + start timestamp) — duplicates are skipped and summarised in a post-import report ("3 events skipped — already exist"). No URLs or alarm actions embedded in the ICS are auto-executed. Escape closes the dialog without importing; Enter does not confirm.
+
+**Do not say:** "import wizard", "ICS importer". Say: **Import Dialog**.
 
 ---
 
@@ -153,6 +232,8 @@ A dedicated configuration window (separate from any main calendar window). Store
 - Sound toggle
 - Autostart toggle
 - Mute invite prompts (per-Calendar)
+- Sync tab: per-Calendar sync URL, auth flow trigger, sync interval, conflict resolution policy (`remote-wins` default; `last-write-wins` power-user option)
+- OAuth tab: optional per-provider client ID overrides (`microsoft_client_id`, `google_client_id`)
 
 ---
 
