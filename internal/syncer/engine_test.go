@@ -3,6 +3,8 @@ package syncer_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -154,6 +156,91 @@ func TestEngine_SyncAll_ContinuesAfterError(t *testing.T) {
 	status := eng.Status(2)
 	if status.LastSyncAt.IsZero() {
 		t.Error("calendar 2 should have synced even though calendar 1 failed")
+	}
+}
+
+func TestEngine_RegisterUnregisterAdapter(t *testing.T) {
+	testutil.NewTestDB(t)
+
+	eng := syncer.New(time.Minute)
+	if eng.HasAdapter(1) {
+		t.Fatal("HasAdapter should be false before registration")
+	}
+	eng.RegisterAdapter(1, &mockAdapter{})
+	if !eng.HasAdapter(1) {
+		t.Fatal("HasAdapter should be true after registration")
+	}
+	eng.UnregisterAdapter(1)
+	if eng.HasAdapter(1) {
+		t.Fatal("HasAdapter should be false after unregistration")
+	}
+	if err := eng.Sync(context.Background(), 1); err == nil {
+		t.Error("expected error syncing an unregistered calendar")
+	}
+}
+
+// blockingAdapter blocks inside FetchChanges until released, and records the
+// peak number of concurrent FetchChanges calls.
+type blockingAdapter struct {
+	active        int32
+	maxConcurrent int32
+	enter         chan struct{}
+	release       chan struct{}
+}
+
+func (b *blockingAdapter) FetchChanges(_ context.Context, _ *syncer.SyncState) ([]syncer.RemoteChange, error) {
+	n := atomic.AddInt32(&b.active, 1)
+	for {
+		old := atomic.LoadInt32(&b.maxConcurrent)
+		if n <= old || atomic.CompareAndSwapInt32(&b.maxConcurrent, old, n) {
+			break
+		}
+	}
+	b.enter <- struct{}{}
+	<-b.release
+	atomic.AddInt32(&b.active, -1)
+	return nil, nil
+}
+
+func (b *blockingAdapter) PushChange(_ context.Context, _ *syncer.SyncState, _ api.Event) error {
+	return nil
+}
+func (b *blockingAdapter) DeleteRemote(_ context.Context, _ *syncer.SyncState, _ string) error {
+	return nil
+}
+
+// TestEngine_Sync_SerializesSameCalendar verifies that two concurrent syncs of
+// the same calendar never overlap (which would race on insert in applyChange).
+// Run with -race for full effect.
+func TestEngine_Sync_SerializesSameCalendar(t *testing.T) {
+	testutil.NewTestDB(t)
+
+	b := &blockingAdapter{enter: make(chan struct{}), release: make(chan struct{})}
+	eng := syncer.New(time.Minute)
+	eng.RegisterAdapter(1, b)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			_ = eng.Sync(context.Background(), 1)
+		}()
+	}
+
+	<-b.enter // first sync is inside FetchChanges, holding the per-calendar lock
+	select {
+	case <-b.enter:
+		t.Fatal("second sync entered FetchChanges before the first released — not serialized")
+	case <-time.After(100 * time.Millisecond):
+	}
+	b.release <- struct{}{} // release first
+	<-b.enter               // second now proceeds
+	b.release <- struct{}{} // release second
+
+	wg.Wait()
+	if got := atomic.LoadInt32(&b.maxConcurrent); got != 1 {
+		t.Errorf("peak concurrent FetchChanges = %d, want 1", got)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"time"
 
@@ -57,10 +58,11 @@ type SyncStatus struct {
 // It runs on its own goroutine, independent of the reminder Daemon (ADR-0002).
 type Engine struct {
 	interval time.Duration
-	adapters map[int64]Adapter
 
-	mu       sync.RWMutex
-	statuses map[int64]SyncStatus
+	mu        sync.RWMutex
+	adapters  map[int64]Adapter
+	statuses  map[int64]SyncStatus
+	syncLocks map[int64]*sync.Mutex // serializes sync per calendar
 
 	stop chan struct{}
 	done chan struct{}
@@ -70,18 +72,38 @@ type Engine struct {
 // Call RegisterAdapter for each sync-enabled calendar, then Start.
 func New(interval time.Duration) *Engine {
 	return &Engine{
-		interval: interval,
-		adapters: make(map[int64]Adapter),
-		statuses: make(map[int64]SyncStatus),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		interval:  interval,
+		adapters:  make(map[int64]Adapter),
+		statuses:  make(map[int64]SyncStatus),
+		syncLocks: make(map[int64]*sync.Mutex),
+		stop:      make(chan struct{}),
+		done:      make(chan struct{}),
 	}
 }
 
-// RegisterAdapter binds a protocol Adapter to calendarID.
-// Must be called before Start.
+// RegisterAdapter binds a protocol Adapter to calendarID. Safe to call after
+// Start, allowing calendars added at runtime to begin syncing.
 func (e *Engine) RegisterAdapter(calendarID int64, a Adapter) {
+	e.mu.Lock()
 	e.adapters[calendarID] = a
+	e.mu.Unlock()
+}
+
+// HasAdapter reports whether an Adapter is registered for calendarID.
+func (e *Engine) HasAdapter(calendarID int64) bool {
+	e.mu.RLock()
+	_, ok := e.adapters[calendarID]
+	e.mu.RUnlock()
+	return ok
+}
+
+// UnregisterAdapter removes the Adapter for calendarID, stopping future syncs.
+// Used when a calendar is deleted or sync is disabled.
+func (e *Engine) UnregisterAdapter(calendarID int64) {
+	e.mu.Lock()
+	delete(e.adapters, calendarID)
+	delete(e.statuses, calendarID)
+	e.mu.Unlock()
 }
 
 // Start launches the sync goroutine. Safe to call exactly once.
@@ -97,7 +119,9 @@ func (e *Engine) Stop() {
 
 // Sync syncs a single calendar immediately in the calling goroutine.
 func (e *Engine) Sync(ctx context.Context, calendarID int64) error {
+	e.mu.RLock()
 	a, ok := e.adapters[calendarID]
+	e.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("syncer: no adapter for calendar %d", calendarID)
 	}
@@ -107,8 +131,13 @@ func (e *Engine) Sync(ctx context.Context, calendarID int64) error {
 // SyncAll syncs every registered calendar sequentially.
 // Returns the first error; sync continues for remaining calendars regardless.
 func (e *Engine) SyncAll(ctx context.Context) error {
+	e.mu.RLock()
+	snapshot := make(map[int64]Adapter, len(e.adapters))
+	maps.Copy(snapshot, e.adapters)
+	e.mu.RUnlock()
+
 	var firstErr error
-	for calID, a := range e.adapters {
+	for calID, a := range snapshot {
 		if err := e.syncOne(ctx, calID, a); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -140,7 +169,25 @@ func (e *Engine) run(ctx context.Context) {
 	}
 }
 
+// calLock returns the per-calendar mutex, creating it on first use. Holding it
+// across a full syncOne guarantees the same calendar is never synced
+// concurrently (e.g. a user "Sync Now" overlapping the background ticker),
+// which would otherwise race on insert in applyChange.
+func (e *Engine) calLock(calendarID int64) *sync.Mutex {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	m, ok := e.syncLocks[calendarID]
+	if !ok {
+		m = &sync.Mutex{}
+		e.syncLocks[calendarID] = m
+	}
+	return m
+}
+
 func (e *Engine) syncOne(ctx context.Context, calendarID int64, a Adapter) error {
+	e.calLock(calendarID).Lock()
+	defer e.calLock(calendarID).Unlock()
+
 	e.setStatus(calendarID, SyncStatus{CalendarID: calendarID, InProgress: true})
 
 	state, err := LoadSyncState(calendarID)
@@ -165,6 +212,9 @@ func (e *Engine) syncOne(ctx context.Context, calendarID int64, a Adapter) error
 	state.LastSyncAt = time.Now()
 	if err := state.Save(); err != nil {
 		slog.Warn("syncer: save state failed", "calendar", calendarID, "err", err)
+	}
+	if err := api.SetCalendarLastSynced(calendarID, state.LastSyncAt.Unix()); err != nil {
+		slog.Warn("syncer: record last_synced_at failed", "calendar", calendarID, "err", err)
 	}
 
 	e.setStatus(calendarID, SyncStatus{

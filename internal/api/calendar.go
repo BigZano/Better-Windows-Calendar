@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -86,6 +87,27 @@ func GetCalendars() ([]Calendar, error) {
 	return cals, rows.Err()
 }
 
+// GetCalendar returns the calendar with the given ID.
+func GetCalendar(id int64) (Calendar, error) {
+	db, err := openDB()
+	if err != nil {
+		return Calendar{}, err
+	}
+
+	row := db.QueryRow(`
+		SELECT id, name, color, type, sync_url, username, credential_key,
+		       sync_enabled, last_synced_at, created_ts
+		FROM calendars WHERE id = ?`, id)
+	c, err := scanCalendar(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Calendar{}, ErrNotFound
+		}
+		return Calendar{}, fmt.Errorf("get calendar %d: %w", id, err)
+	}
+	return c, nil
+}
+
 // UpdateCalendar updates only the whitelisted fields for the given calendar ID.
 func UpdateCalendar(id int64, fields map[string]any) error {
 	if len(fields) == 0 {
@@ -115,6 +137,20 @@ func UpdateCalendar(id int64, fields map[string]any) error {
 		return fmt.Errorf("update calendar %d: %w", id, err)
 	}
 	slog.Info("updated calendar", "id", id)
+	return nil
+}
+
+// SetCalendarLastSynced records the timestamp of the most recent successful
+// sync on the calendars row. Kept off the UpdateCalendar allowlist because it
+// is engine-internal, not a user-editable field.
+func SetCalendarLastSynced(id int64, ts int64) error {
+	db, err := openDB()
+	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(`UPDATE calendars SET last_synced_at = ? WHERE id = ?`, ts, id); err != nil {
+		return fmt.Errorf("set last_synced_at for calendar %d: %w", id, err)
+	}
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"image/color"
 	"log/slog"
@@ -23,7 +24,9 @@ import (
 	"pycalendar/internal/autostart"
 	"pycalendar/internal/barsetup"
 	"pycalendar/internal/config"
+	"pycalendar/internal/credstore"
 	"pycalendar/internal/icsimport"
+	"pycalendar/internal/syncwire"
 )
 
 var fyneApp fyne.App
@@ -920,6 +923,30 @@ func buildCalendarsTab() fyne.CanvasObject {
 			}
 
 			row := container.NewHBox(visCheck, colorDot, nameLabel, muteCheck, editBtn, deleteBtn)
+
+			// Sync controls for remote (non-local) calendars.
+			if c.Type != api.CalendarTypeLocal {
+				syncStatus := widget.NewLabel(lastSyncedLabel(c))
+				syncBtn := widget.NewButton("Sync Now", nil)
+				syncBtn.OnTapped = func() {
+					syncBtn.Disable()
+					syncStatus.SetText("Syncing…")
+					go func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+						defer cancel()
+						if err := syncwire.SyncNow(ctx, c.ID); err != nil {
+							slog.Warn("sync now failed", "id", c.ID, "err", err)
+							syncStatus.SetText("Failed: " + err.Error())
+						} else {
+							syncStatus.SetText("Synced just now")
+						}
+						syncBtn.Enable()
+					}()
+				}
+				row.Add(syncBtn)
+				row.Add(syncStatus)
+			}
+
 			listBox.Add(row)
 		}
 		listBox.Refresh()
@@ -954,6 +981,7 @@ func showSimpleDeleteCalendar(c api.Calendar, onDone func()) {
 		if err := api.DeleteCalendar(c.ID); err != nil {
 			slog.Error("delete calendar failed", "id", c.ID, "err", err)
 		}
+		syncwire.UnregisterCalendar(c.ID)
 		dw.Close()
 		if onCalendarsChanged != nil {
 			onCalendarsChanged()
@@ -1014,6 +1042,7 @@ func showReassignDeleteCalendar(c api.Calendar, eventCount int, onDone func()) {
 		if err := api.DeleteCalendar(c.ID); err != nil {
 			slog.Error("delete calendar failed", "id", c.ID, "err", err)
 		}
+		syncwire.UnregisterCalendar(c.ID)
 		dw.Close()
 		if onCalendarsChanged != nil {
 			onCalendarsChanged()
@@ -1095,13 +1124,65 @@ func ShowEditCalendarWindow(cal api.Calendar, onSave func()) {
 		presetRow.Add(container.NewStack(dot, btn))
 	}
 
+	// ---- CalDAV account fields (shown only when type is CalDAV) ----
+	urlEntry := widget.NewEntry()
+	urlEntry.SetPlaceHolder("https://dav.example.com/calendars/user/personal/")
+	userEntry := widget.NewEntry()
+	userEntry.SetPlaceHolder("username or email")
+	passEntry := widget.NewPasswordEntry()
+
+	var origUsername string
+	if cal.Type == api.CalendarTypeCalDAV {
+		if cal.SyncURL.Valid {
+			urlEntry.SetText(cal.SyncURL.String)
+		}
+		if u, _, err := credstore.GetCalDAV(cal.ID); err == nil {
+			userEntry.SetText(u)
+			origUsername = u
+		}
+		passEntry.SetPlaceHolder("(leave blank to keep current)")
+	}
+
+	caldavBox := container.NewVBox(
+		formRow("Server URL:", urlEntry),
+		formRow("Username:", userEntry),
+		formRow("App password:", passEntry),
+	)
+
+	// ---- Type selector ----
+	typeForLabel := map[string]string{"Local": api.CalendarTypeLocal, "CalDAV": api.CalendarTypeCalDAV}
+	selectedType := api.CalendarTypeLocal
+	if cal.Type != "" {
+		selectedType = cal.Type
+	}
+	typeSelect := widget.NewSelect([]string{"Local", "CalDAV"}, func(label string) {
+		selectedType = typeForLabel[label]
+		if selectedType == api.CalendarTypeCalDAV {
+			caldavBox.Show()
+		} else {
+			caldavBox.Hide()
+		}
+	})
+	if selectedType == api.CalendarTypeCalDAV {
+		typeSelect.SetSelected("CalDAV")
+	} else {
+		typeSelect.SetSelected("Local")
+		caldavBox.Hide()
+	}
+	if cal.ID != 0 {
+		typeSelect.Disable() // type is fixed after creation
+	}
+
 	errorLabel := canvas.NewText("", color.RGBA{R: 200, A: 255})
 
 	saveBtn := widget.NewButton("Save", func() {
+		fail := func(msg string) {
+			errorLabel.Text = msg
+			errorLabel.Refresh()
+		}
 		name := nameEntry.Text
 		if name == "" {
-			errorLabel.Text = "Name is required"
-			errorLabel.Refresh()
+			fail("Name is required")
 			return
 		}
 		hexColor := hexEntry.Text
@@ -1109,21 +1190,55 @@ func ShowEditCalendarWindow(cal api.Calendar, onSave func()) {
 			hexColor = "#3B82F6"
 		}
 
-		if cal.ID == 0 {
-			_, err := api.CreateCalendar(name, hexColor, "local")
-			if err != nil {
-				errorLabel.Text = "Failed: " + err.Error()
-				errorLabel.Refresh()
+		if selectedType == api.CalendarTypeCalDAV {
+			url := strings.TrimSpace(urlEntry.Text)
+			user := strings.TrimSpace(userEntry.Text)
+			pass := passEntry.Text
+			if !strings.HasPrefix(url, "https://") {
+				fail("Server URL must start with https://")
 				return
 			}
+			if user == "" {
+				fail("Username is required")
+				return
+			}
+			if cal.ID == 0 && pass == "" {
+				fail("App password is required")
+				return
+			}
+
+			calID := cal.ID
+			if calID == 0 {
+				id, err := api.CreateCalendar(name, hexColor, api.CalendarTypeCalDAV)
+				if err != nil {
+					fail("Failed: " + err.Error())
+					return
+				}
+				calID = id
+			}
+			if err := api.UpdateCalendar(calID, map[string]any{
+				"name": name, "color": hexColor, "sync_url": url,
+			}); err != nil {
+				fail("Failed: " + err.Error())
+				return
+			}
+			if err := persistCalDAVCreds(calID, user, pass, origUsername); err != nil {
+				fail("Failed to save credentials: " + err.Error())
+				return
+			}
+			if err := syncwire.RegisterCalendar(calID); err != nil {
+				slog.Warn("register calendar for sync", "id", calID, "err", err)
+			}
 		} else {
-			err := api.UpdateCalendar(cal.ID, map[string]any{
-				"name":  name,
-				"color": hexColor,
-			})
-			if err != nil {
-				errorLabel.Text = "Failed: " + err.Error()
-				errorLabel.Refresh()
+			if cal.ID == 0 {
+				if _, err := api.CreateCalendar(name, hexColor, api.CalendarTypeLocal); err != nil {
+					fail("Failed: " + err.Error())
+					return
+				}
+			} else if err := api.UpdateCalendar(cal.ID, map[string]any{
+				"name": name, "color": hexColor,
+			}); err != nil {
+				fail("Failed: " + err.Error())
 				return
 			}
 		}
@@ -1140,15 +1255,43 @@ func ShowEditCalendarWindow(cal api.Calendar, onSave func()) {
 
 	form := container.NewVBox(
 		formRow("Name:", nameEntry),
+		formRow("Type:", typeSelect),
 		widget.NewLabel("Color:"),
 		presetRow,
 		container.NewHBox(swatch, formRow("Hex (#RRGGBB):", hexEntry)),
+		caldavBox,
 		errorLabel,
 		container.NewHBox(saveBtn, cancelBtn),
 	)
 
 	w.SetContent(form)
 	w.Show()
+}
+
+// lastSyncedLabel renders a Calendar's last successful sync time for the
+// Calendars tab. The engine persists it on the calendars row after each sync.
+func lastSyncedLabel(c api.Calendar) string {
+	if !c.LastSyncedAt.Valid || c.LastSyncedAt.Int64 == 0 {
+		return "Never synced"
+	}
+	return "Last synced " + time.Unix(c.LastSyncedAt.Int64, 0).Format("Jan 2 15:04")
+}
+
+// persistCalDAVCreds saves CalDAV credentials to the keyring. A blank password
+// on edit means "keep current"; if only the username changed, the existing
+// password is read back and re-stored under the new username.
+func persistCalDAVCreds(calID int64, username, password, origUsername string) error {
+	if password != "" {
+		return credstore.StoreCalDAV(calID, username, password)
+	}
+	if username != origUsername {
+		_, oldPass, err := credstore.GetCalDAV(calID)
+		if err != nil {
+			return fmt.Errorf("username changed but cannot read existing password: %w", err)
+		}
+		return credstore.StoreCalDAV(calID, username, oldPass)
+	}
+	return nil
 }
 
 // ---- Logs tab ----

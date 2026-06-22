@@ -1,6 +1,7 @@
 package syncwire
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 
@@ -135,5 +136,22 @@ func TestBuildEngine_CountsOnlySyncableCalendars(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("registered adapters = %d, want 1 (only the enabled CalDAV calendar)", n)
+	}
+}
+
+func TestSyncNow_NonSyncCalendar_ReturnsError(t *testing.T) {
+	testutil.NewTestDB(t) // default Local calendar (id=1)
+
+	// No engine running, and the Local calendar has no adapter.
+	if err := SyncNow(context.Background(), 1); err == nil {
+		t.Error("expected error syncing a non-sync (local) calendar")
+	}
+}
+
+func TestRegisterCalendar_NoEngine_ReturnsError(t *testing.T) {
+	testutil.NewTestDB(t)
+
+	if err := RegisterCalendar(1); err == nil {
+		t.Error("expected error when the sync engine is not running")
 	}
 }
