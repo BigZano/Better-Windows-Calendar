@@ -39,7 +39,7 @@ func (a *Adapter) getAccessToken(ctx context.Context) ([]byte, error) {
 		"scope":         {"Calendars.ReadWrite offline_access"},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint,
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.tokenURL,
 		strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err

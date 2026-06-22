@@ -22,7 +22,7 @@ import (
 	"pycalendar/internal/syncer"
 )
 
-const graphBaseURL = "https://graph.microsoft.com/v1.0"
+const defaultGraphBaseURL = "https://graph.microsoft.com/v1.0"
 
 // Adapter is the Microsoft Graph implementation of syncer.Adapter.
 // graphCalendarID is the opaque Graph calendar ID string (e.g. "AAMkAG...").
@@ -34,6 +34,8 @@ type Adapter struct {
 	graphCalendarID string
 	clientID        string
 	client          *http.Client
+	graphBaseURL    string
+	tokenURL        string
 }
 
 // New returns a Graph Adapter. clientID must be set; an empty string will
@@ -44,6 +46,8 @@ func New(calendarID int64, graphCalendarID, clientID string) *Adapter {
 		graphCalendarID: graphCalendarID,
 		clientID:        clientID,
 		client:          &http.Client{Timeout: 30 * time.Second},
+		graphBaseURL:    defaultGraphBaseURL,
+		tokenURL:        tokenEndpoint,
 	}
 }
 
@@ -91,7 +95,7 @@ func (a *Adapter) PushChange(ctx context.Context, _ *syncer.SyncState, e api.Eve
 		reqURL = e.ResourceURL.String
 	} else {
 		method = http.MethodPost
-		reqURL = graphBaseURL + "/me/calendars/" + a.graphCalendarID + "/events"
+		reqURL = a.graphBaseURL + "/me/calendars/" + a.graphCalendarID + "/events"
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, reqURL, bytes.NewReader(body))
@@ -141,7 +145,7 @@ func (a *Adapter) DeleteRemote(ctx context.Context, _ *syncer.SyncState, resourc
 // ---- fetch helpers ----
 
 func (a *Adapter) fullFetch(ctx context.Context, accessToken []byte, state *syncer.SyncState) ([]syncer.RemoteChange, error) {
-	startURL := graphBaseURL + "/me/calendars/" + a.graphCalendarID +
+	startURL := a.graphBaseURL + "/me/calendars/" + a.graphCalendarID +
 		"/events/delta?$select=id,subject,start,end,isAllDay,body,location,webLink,lastModifiedDateTime"
 	return a.fetchPages(ctx, accessToken, startURL, state)
 }
@@ -213,7 +217,7 @@ func (a *Adapter) fetchPage(ctx context.Context, accessToken []byte, pageURL str
 
 	var changes []syncer.RemoteChange
 	for _, ge := range dr.Value {
-		resourceURL := graphBaseURL + "/me/events/" + ge.ID
+		resourceURL := a.graphBaseURL + "/me/events/" + ge.ID
 		if ge.Removed != nil {
 			changes = append(changes, syncer.RemoteChange{
 				ResourceURL: resourceURL,

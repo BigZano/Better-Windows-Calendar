@@ -105,6 +105,40 @@ func Pool() (*sql.DB, error) {
 	return poolDB, nil
 }
 
+// SetPool replaces the shared pool. For tests only.
+func SetPool(db *sql.DB) {
+	poolMu.Lock()
+	poolDB = db
+	poolMu.Unlock()
+}
+
+// MigrateDB applies all pending migrations to db without touching the shared pool.
+// For tests only.
+func MigrateDB(db *sql.DB) error {
+	if err := ensureSchemaVersionTable(db); err != nil {
+		return err
+	}
+	current, err := currentVersion(db)
+	if err != nil {
+		return err
+	}
+	for _, m := range migrations {
+		if m.version <= current {
+			continue
+		}
+		if err := m.run(db); err != nil {
+			return fmt.Errorf("migration v%d: %w", m.version, err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO schema_version (version, applied_at) VALUES (?, ?)`,
+			m.version, time.Now().Unix(),
+		); err != nil {
+			return fmt.Errorf("record migration v%d: %w", m.version, err)
+		}
+	}
+	return nil
+}
+
 // InitDB runs all pending schema migrations in version order and seeds Pool.
 func InitDB() error {
 	db, err := Open(5)
@@ -339,4 +373,3 @@ func isAlreadyExists(err error) bool {
 		strings.Contains(s, "already exists") ||
 		strings.Contains(s, "unique constraint failed")
 }
-
