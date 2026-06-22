@@ -26,9 +26,9 @@ func (m *mockAdapter) FetchChanges(_ context.Context, _ *syncer.SyncState) ([]sy
 	return m.changes, m.fetchErr
 }
 
-func (m *mockAdapter) PushChange(_ context.Context, _ *syncer.SyncState, e api.Event) error {
+func (m *mockAdapter) PushChange(_ context.Context, _ *syncer.SyncState, e api.Event) (syncer.PushResult, error) {
 	m.pushed = append(m.pushed, e)
-	return m.pushErr
+	return syncer.PushResult{}, m.pushErr
 }
 
 func (m *mockAdapter) DeleteRemote(_ context.Context, _ *syncer.SyncState, resourceURL string) error {
@@ -202,8 +202,8 @@ func (b *blockingAdapter) FetchChanges(_ context.Context, _ *syncer.SyncState) (
 	return nil, nil
 }
 
-func (b *blockingAdapter) PushChange(_ context.Context, _ *syncer.SyncState, _ api.Event) error {
-	return nil
+func (b *blockingAdapter) PushChange(_ context.Context, _ *syncer.SyncState, _ api.Event) (syncer.PushResult, error) {
+	return syncer.PushResult{}, nil
 }
 func (b *blockingAdapter) DeleteRemote(_ context.Context, _ *syncer.SyncState, _ string) error {
 	return nil

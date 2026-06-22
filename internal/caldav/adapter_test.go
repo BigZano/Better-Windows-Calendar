@@ -282,7 +282,8 @@ func TestCalDAVAdapter_PushChange_NewEvent_SendsPUT(t *testing.T) {
 	ev := makeEvent("New Event", 1)
 	state := &syncer.SyncState{}
 
-	if err := a.PushChange(t.Context(), state, ev); err != nil {
+	res, err := a.PushChange(t.Context(), state, ev)
+	if err != nil {
 		t.Fatalf("PushChange: %v", err)
 	}
 
@@ -291,6 +292,11 @@ func TestCalDAVAdapter_PushChange_NewEvent_SendsPUT(t *testing.T) {
 	}
 	if !strings.HasSuffix(gotPath, ".ics") {
 		t.Errorf("path should end with .ics, got %q", gotPath)
+	}
+	// A create must report the resource URL it PUT to, so the engine can link
+	// the local event.
+	if !strings.HasPrefix(res.ResourceURL, srv.URL+"/calendars/test/") || !strings.HasSuffix(res.ResourceURL, ".ics") {
+		t.Errorf("ResourceURL: got %q, want the PUT target under the calendar URL", res.ResourceURL)
 	}
 	if !strings.Contains(gotContentType, "text/calendar") {
 		t.Errorf("Content-Type: got %q, want text/calendar", gotContentType)
@@ -321,7 +327,7 @@ func TestCalDAVAdapter_PushChange_ExistingEvent_SendsIfMatch(t *testing.T) {
 	state := &syncer.SyncState{}
 	state.SetETag(ev.ResourceURL.String, `"stored-etag"`)
 
-	if err := a.PushChange(t.Context(), state, ev); err != nil {
+	if _, err := a.PushChange(t.Context(), state, ev); err != nil {
 		t.Fatalf("PushChange: %v", err)
 	}
 	if gotIfMatch != `"stored-etag"` {
@@ -347,7 +353,7 @@ func TestCalDAVAdapter_PushChange_ResponseETag_StoredInState(t *testing.T) {
 	ev := makeEvent("Event With ETag", 2)
 	state := &syncer.SyncState{}
 
-	if err := a.PushChange(t.Context(), state, ev); err != nil {
+	if _, err := a.PushChange(t.Context(), state, ev); err != nil {
 		t.Fatalf("PushChange: %v", err)
 	}
 

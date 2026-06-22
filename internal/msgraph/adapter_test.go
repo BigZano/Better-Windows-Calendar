@@ -205,6 +205,7 @@ func TestMSGraphAdapter_PushChange_NewEvent_SendsPOST(t *testing.T) {
 		gotMethod = r.Method
 		json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":"AAMkNEW","@odata.etag":"W/\"etag99\""}`))
 	})
 
 	srv := httptest.NewServer(mux)
@@ -215,7 +216,8 @@ func TestMSGraphAdapter_PushChange_NewEvent_SendsPOST(t *testing.T) {
 		Title:   "New Graph Event",
 		StartTS: time.Date(2026, 6, 1, 14, 0, 0, 0, time.UTC).Unix(),
 	}
-	if err := a.PushChange(t.Context(), &syncer.SyncState{}, ev); err != nil {
+	res, err := a.PushChange(t.Context(), &syncer.SyncState{}, ev)
+	if err != nil {
 		t.Fatalf("PushChange: %v", err)
 	}
 	if gotMethod != http.MethodPost {
@@ -223,6 +225,14 @@ func TestMSGraphAdapter_PushChange_NewEvent_SendsPOST(t *testing.T) {
 	}
 	if subj, _ := gotBody["subject"].(string); subj != "New Graph Event" {
 		t.Errorf("subject: got %q, want %q", subj, "New Graph Event")
+	}
+	// A create must report the newly assigned resource URL so the engine can
+	// link the local event and not re-import it.
+	if want := srv.URL + "/me/events/AAMkNEW"; res.ResourceURL != want {
+		t.Errorf("ResourceURL: got %q, want %q", res.ResourceURL, want)
+	}
+	if res.ETag != `W/"etag99"` {
+		t.Errorf("ETag: got %q, want %q", res.ETag, `W/"etag99"`)
 	}
 }
 
@@ -249,7 +259,7 @@ func TestMSGraphAdapter_PushChange_ExistingEvent_SendsPATCH(t *testing.T) {
 	ev.ResourceURL.Valid = true
 	ev.ResourceURL.String = srv.URL + "/me/events/existing-event-id"
 
-	if err := a.PushChange(t.Context(), &syncer.SyncState{}, ev); err != nil {
+	if _, err := a.PushChange(t.Context(), &syncer.SyncState{}, ev); err != nil {
 		t.Fatalf("PushChange: %v", err)
 	}
 	if gotMethod != http.MethodPatch {
@@ -307,7 +317,7 @@ func TestMSGraphAdapter_TokenRotation_StoresNewRefreshToken(t *testing.T) {
 		Title:   "Rotation Test",
 		StartTS: time.Now().Unix(),
 	}
-	if err := a.PushChange(t.Context(), &syncer.SyncState{}, ev); err != nil {
+	if _, err := a.PushChange(t.Context(), &syncer.SyncState{}, ev); err != nil {
 		t.Fatalf("PushChange: %v", err)
 	}
 

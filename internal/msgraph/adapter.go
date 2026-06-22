@@ -77,22 +77,27 @@ func (a *Adapter) FetchChanges(ctx context.Context, state *syncer.SyncState) ([]
 }
 
 // PushChange serialises e as a Graph JSON body and POSTs (new) or PATCHes (existing).
-func (a *Adapter) PushChange(ctx context.Context, _ *syncer.SyncState, e api.Event) error {
+func (a *Adapter) PushChange(ctx context.Context, _ *syncer.SyncState, e api.Event) (syncer.PushResult, error) {
 	accessToken, err := a.getAccessToken(ctx)
 	if err != nil {
-		return err
+		return syncer.PushResult{}, err
 	}
 	defer zeroBytes(accessToken)
 
 	body, err := eventToGraphBody(e)
 	if err != nil {
-		return fmt.Errorf("msgraph: serialise event: %w", err)
+		return syncer.PushResult{}, fmt.Errorf("msgraph: serialise event: %w", err)
+	}
+
+	existingURL := ""
+	if e.ResourceURL.Valid {
+		existingURL = e.ResourceURL.String
 	}
 
 	var method, reqURL string
-	if e.ResourceURL.Valid && e.ResourceURL.String != "" {
+	if existingURL != "" {
 		method = http.MethodPatch
-		reqURL = e.ResourceURL.String
+		reqURL = existingURL
 	} else {
 		method = http.MethodPost
 		reqURL = a.graphBaseURL + "/me/calendars/" + a.graphCalendarID + "/events"
@@ -100,21 +105,36 @@ func (a *Adapter) PushChange(ctx context.Context, _ *syncer.SyncState, e api.Eve
 
 	req, err := http.NewRequestWithContext(ctx, method, reqURL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return syncer.PushResult{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+string(accessToken))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("msgraph: %s event: %w", method, err)
+		return syncer.PushResult{}, fmt.Errorf("msgraph: %s event: %w", method, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("msgraph: %s event HTTP %d: %s", method, resp.StatusCode, truncate(string(b), 200))
+		return syncer.PushResult{}, fmt.Errorf("msgraph: %s event HTTP %d: %s", method, resp.StatusCode, truncate(string(b), 200))
 	}
-	return nil
+
+	// Parse the returned event so a create can be linked to its new resource;
+	// a missing/!unparseable body is tolerated for an update we already have a
+	// URL for.
+	var created struct {
+		ID   string `json:"id"`
+		ETag string `json:"@odata.etag"`
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	_ = json.Unmarshal(respBody, &created)
+
+	resourceURL := existingURL
+	if resourceURL == "" && created.ID != "" {
+		resourceURL = a.graphBaseURL + "/me/events/" + created.ID
+	}
+	return syncer.PushResult{ResourceURL: resourceURL, ETag: created.ETag}, nil
 }
 
 // DeleteRemote sends DELETE for the Graph event at resourceURL.

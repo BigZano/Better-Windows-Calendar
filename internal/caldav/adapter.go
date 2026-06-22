@@ -59,15 +59,15 @@ func (a *Adapter) FetchChanges(ctx context.Context, state *syncer.SyncState) ([]
 
 // PushChange serialises e as iCalendar and PUTs it to the remote calendar.
 // Uses If-Match on update to catch concurrent edits.
-func (a *Adapter) PushChange(ctx context.Context, state *syncer.SyncState, e api.Event) error {
+func (a *Adapter) PushChange(ctx context.Context, state *syncer.SyncState, e api.Event) (syncer.PushResult, error) {
 	user, pass, err := credstore.GetCalDAV(a.calendarID)
 	if err != nil {
-		return fmt.Errorf("caldav: credentials: %w", err)
+		return syncer.PushResult{}, fmt.Errorf("caldav: credentials: %w", err)
 	}
 
 	icsData, err := eventToICS(e)
 	if err != nil {
-		return fmt.Errorf("caldav: serialise event: %w", err)
+		return syncer.PushResult{}, fmt.Errorf("caldav: serialise event: %w", err)
 	}
 
 	resourceURL := e.ResourceURL.String
@@ -77,7 +77,7 @@ func (a *Adapter) PushChange(ctx context.Context, state *syncer.SyncState, e api
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, resourceURL, bytes.NewReader(icsData))
 	if err != nil {
-		return err
+		return syncer.PushResult{}, err
 	}
 	req.SetBasicAuth(user, pass)
 	req.Header.Set("Content-Type", "text/calendar; charset=utf-8")
@@ -87,16 +87,17 @@ func (a *Adapter) PushChange(ctx context.Context, state *syncer.SyncState, e api
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("caldav: PUT %s: %w", resourceURL, err)
+		return syncer.PushResult{}, fmt.Errorf("caldav: PUT %s: %w", resourceURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("caldav: PUT %s: HTTP %d", resourceURL, resp.StatusCode)
+		return syncer.PushResult{}, fmt.Errorf("caldav: PUT %s: HTTP %d", resourceURL, resp.StatusCode)
 	}
-	if newETag := resp.Header.Get("ETag"); newETag != "" {
-		state.SetETag(resourceURL, stripQuotes(newETag))
+	etag := stripQuotes(resp.Header.Get("ETag"))
+	if etag != "" {
+		state.SetETag(resourceURL, etag)
 	}
-	return nil
+	return syncer.PushResult{ResourceURL: resourceURL, ETag: etag}, nil
 }
 
 // DeleteRemote removes the resource at resourceURL, sending If-Match if we

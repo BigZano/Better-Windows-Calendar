@@ -28,14 +28,24 @@ type RemoteChange struct {
 	Event       *api.Event // nil for ChangeDelete
 }
 
+// PushResult reports where a pushed event lives on the remote afterwards, so
+// the engine can link the local event to its remote resource and avoid
+// re-importing it as a new event on the next fetch.
+type PushResult struct {
+	ResourceURL string
+	ETag        string
+}
+
 // Adapter is the protocol-specific backend for syncing one calendar.
 // CalDAV and Microsoft Graph each provide a distinct Adapter implementation.
 type Adapter interface {
 	// FetchChanges returns changes since the last sync. state.SyncToken drives
 	// incremental fetches; an empty token triggers a full fetch.
 	FetchChanges(ctx context.Context, state *SyncState) ([]RemoteChange, error)
-	// PushChange sends a local event change to the remote calendar.
-	PushChange(ctx context.Context, state *SyncState, e api.Event) error
+	// PushChange sends a local event change to the remote calendar and returns
+	// the resulting remote resource URL and ETag (the existing one for an
+	// update, a freshly assigned one for a create).
+	PushChange(ctx context.Context, state *SyncState, e api.Event) (PushResult, error)
 	// DeleteRemote removes the remote resource at resourceURL.
 	DeleteRemote(ctx context.Context, state *SyncState, resourceURL string) error
 }
