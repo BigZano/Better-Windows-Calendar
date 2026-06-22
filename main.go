@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"pycalendar/internal/daemon"
 	"pycalendar/internal/keychain"
 	"pycalendar/internal/storage"
+	"pycalendar/internal/syncwire"
 	"pycalendar/ui"
 )
 
@@ -61,8 +63,17 @@ func main() {
 			slog.Error("init db failed", "err", err)
 			os.Exit(1)
 		}
+		syncCtx, cancelSync := context.WithCancel(context.Background())
+		stopSync, _, err := syncwire.Start(syncCtx)
+		if err != nil {
+			slog.Warn("sync engine failed to start", "err", err)
+		}
 		d := daemon.New(30 * time.Second)
 		d.Run()
+		if stopSync != nil {
+			stopSync()
+		}
+		cancelSync()
 
 	case "bar":
 		if err := storage.InitDB(); err != nil {

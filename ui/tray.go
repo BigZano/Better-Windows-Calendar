@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"pycalendar/internal/config"
 	"pycalendar/internal/daemon"
 	"pycalendar/internal/storage"
+	"pycalendar/internal/syncwire"
 )
 
 var embeddedDaemon *daemon.Daemon
@@ -71,8 +73,17 @@ func RunTray() {
 	embeddedDaemon = daemon.New(30 * time.Second)
 	go embeddedDaemon.Run()
 
+	syncCtx, cancelSync := context.WithCancel(context.Background())
+	stopSync, _, err := syncwire.Start(syncCtx)
+	if err != nil {
+		slog.Warn("sync engine failed to start", "err", err)
+		stopSync = func() {}
+	}
+
 	a.Run()
 
+	stopSync()
+	cancelSync()
 	if embeddedDaemon != nil {
 		embeddedDaemon.Stop()
 	}

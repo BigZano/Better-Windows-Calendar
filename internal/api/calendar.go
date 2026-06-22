@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// Calendar source types, stored in the calendars.type column.
+const (
+	CalendarTypeLocal   = "local"
+	CalendarTypeCalDAV  = "caldav"
+	CalendarTypeGoogle  = "google"  // deferred (ADR-0003); designed for, not yet implemented
+	CalendarTypeOutlook = "outlook" // Outlook Calendar via Microsoft Graph
+)
+
 var allowedCalendarUpdateFields = map[string]bool{
 	"name":         true,
 	"color":        true,
@@ -20,7 +28,7 @@ type Calendar struct {
 	ID            int64
 	Name          string
 	Color         string
-	Type          string // "local" | "caldav" | "google"
+	Type          string // one of CalendarType* (local | caldav | google | outlook)
 	SyncURL       sql.NullString
 	Username      sql.NullString
 	CredentialKey sql.NullString
@@ -35,7 +43,6 @@ func CreateCalendar(name, color, calType string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-
 
 	res, err := db.Exec(
 		`INSERT INTO calendars (name, color, type, created_ts) VALUES (?, ?, ?, ?)`,
@@ -58,7 +65,6 @@ func GetCalendars() ([]Calendar, error) {
 	if err != nil {
 		return nil, err
 	}
-
 
 	rows, err := db.Query(`
 		SELECT id, name, color, type, sync_url, username, credential_key,
@@ -104,7 +110,6 @@ func UpdateCalendar(id int64, fields map[string]any) error {
 		return err
 	}
 
-
 	_, err = db.Exec(`UPDATE calendars SET `+strings.Join(setClauses, ", ")+` WHERE id = ?`, args...)
 	if err != nil {
 		return fmt.Errorf("update calendar %d: %w", id, err)
@@ -119,7 +124,6 @@ func DeleteCalendar(id int64) error {
 	if err != nil {
 		return err
 	}
-
 
 	_, err = db.Exec(`DELETE FROM calendars WHERE id = ?`, id)
 	if err != nil {
