@@ -75,6 +75,91 @@ func TestResolveConflict(t *testing.T) {
 	}
 }
 
+func TestGetAllPendingConflicts_AcrossCalendars(t *testing.T) {
+	testutil.NewTestDB(t)
+
+	ev := api.Event{ID: 1, Title: "Event", StartTS: time.Now().Unix()}
+	syncer.RecordConflict(1, ev, ev)
+	syncer.RecordConflict(2, ev, ev)
+
+	all, err := syncer.GetAllPendingConflicts()
+	if err != nil {
+		t.Fatalf("GetAllPendingConflicts: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("got %d conflicts across calendars, want 2", len(all))
+	}
+
+	n, err := syncer.CountPendingConflicts()
+	if err != nil {
+		t.Fatalf("CountPendingConflicts: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("count = %d, want 2", n)
+	}
+}
+
+func TestResolveAcceptRemote_MarksResolved(t *testing.T) {
+	testutil.NewTestDB(t)
+
+	ev := api.Event{ID: 3, Title: "Event", StartTS: time.Now().Unix()}
+	syncer.RecordConflict(1, ev, ev)
+	pending, _ := syncer.GetAllPendingConflicts()
+	if len(pending) != 1 {
+		t.Fatalf("setup: got %d pending, want 1", len(pending))
+	}
+
+	if err := syncer.ResolveAcceptRemote(pending[0]); err != nil {
+		t.Fatalf("ResolveAcceptRemote: %v", err)
+	}
+	if n, _ := syncer.CountPendingConflicts(); n != 0 {
+		t.Errorf("pending count = %d after accept-remote, want 0", n)
+	}
+}
+
+func TestResolveKeepLocal_RestoresLocalEvent(t *testing.T) {
+	db := testutil.NewTestDB(t)
+
+	// Seed an event currently holding the remote version (remote-wins was
+	// already applied by the engine when the conflict was detected).
+	var eventID int64
+	row := db.QueryRow(`
+		INSERT INTO events (title, start_ts, updated_ts, created_ts, calendar_id, resource_url)
+		VALUES ('Their version', ?, ?, ?, 1, 'https://example.com/cal/e.ics')
+		RETURNING id`,
+		time.Now().Unix(), time.Now().Unix(), time.Now().Unix(),
+	)
+	if err := row.Scan(&eventID); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+
+	local := api.Event{ID: eventID, Title: "My version", StartTS: time.Now().Unix()}
+	remote := api.Event{ID: eventID, Title: "Their version", StartTS: time.Now().Unix()}
+	if err := syncer.RecordConflict(1, local, remote); err != nil {
+		t.Fatalf("RecordConflict: %v", err)
+	}
+
+	pending, _ := syncer.GetAllPendingConflicts()
+	if len(pending) != 1 {
+		t.Fatalf("setup: got %d pending, want 1", len(pending))
+	}
+
+	if err := syncer.ResolveKeepLocal(pending[0]); err != nil {
+		t.Fatalf("ResolveKeepLocal: %v", err)
+	}
+
+	got, err := api.GetEventByResourceURL("https://example.com/cal/e.ics")
+	if err != nil {
+		t.Fatalf("GetEventByResourceURL: %v", err)
+	}
+	if got.Title != "My version" {
+		t.Errorf("title = %q, want %q (local should be restored)", got.Title, "My version")
+	}
+	if n, _ := syncer.CountPendingConflicts(); n != 0 {
+		t.Errorf("pending count = %d after keep-local, want 0", n)
+	}
+}
+
 func TestPruneStaleConflicts(t *testing.T) {
 	db := testutil.NewTestDB(t)
 

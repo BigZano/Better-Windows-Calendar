@@ -72,6 +72,61 @@ func GetPendingConflicts(calendarID int64) ([]Conflict, error) {
 	return scanConflicts(rows)
 }
 
+// GetAllPendingConflicts returns every unresolved conflict across all
+// calendars, newest first. Backs the Alerts tab.
+func GetAllPendingConflicts() ([]Conflict, error) {
+	db, err := storage.Pool()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(
+		`SELECT id, calendar_id, event_id, local_json, remote_json,
+		        detected_at, resolved_at, COALESCE(resolution,'')
+		   FROM conflicts
+		  WHERE resolved_at IS NULL
+		  ORDER BY detected_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("conflict: query all pending: %w", err)
+	}
+	defer rows.Close()
+	return scanConflicts(rows)
+}
+
+// CountPendingConflicts returns the number of unresolved conflicts. Backs the
+// tray badge.
+func CountPendingConflicts() (int, error) {
+	db, err := storage.Pool()
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM conflicts WHERE resolved_at IS NULL`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("conflict: count pending: %w", err)
+	}
+	return n, nil
+}
+
+// ResolveAcceptRemote resolves a conflict by keeping the remote version. The
+// engine already applied remote-wins when the conflict was detected, so this
+// only marks the row resolved.
+func ResolveAcceptRemote(c Conflict) error {
+	return ResolveConflict(c.ID, "remote-wins")
+}
+
+// ResolveKeepLocal resolves a conflict by restoring the local version that the
+// engine overwrote with remote-wins, then marks the row resolved.
+func ResolveKeepLocal(c Conflict) error {
+	var local api.Event
+	if err := json.Unmarshal([]byte(c.LocalJSON), &local); err != nil {
+		return fmt.Errorf("conflict: unmarshal local: %w", err)
+	}
+	if err := api.UpdateEventFromRemote(c.EventID, local); err != nil {
+		return fmt.Errorf("conflict: restore local: %w", err)
+	}
+	return ResolveConflict(c.ID, "keep-local")
+}
+
 // ResolveConflict marks a conflict as resolved.
 // resolution should be "remote-wins" or "keep-local".
 func ResolveConflict(id int64, resolution string) error {

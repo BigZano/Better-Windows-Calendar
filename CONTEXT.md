@@ -177,8 +177,8 @@ OAuth client IDs ship as built-in defaults in the binary. Per-provider overrides
 The persistent record of sync conflicts that have not yet been reviewed by the user. When both a local Event and its remote counterpart have changed since the last sync, the conflict is written to the `conflicts` table (both versions as JSON blobs) before the default resolution (remote-wins) is applied. The user has a **30-day retention window** to reverse the decision. Entries are pruned on startup after the window expires.
 
 Surfaced in two places:
-1. **Toast notification** at conflict time — "Keep local" / "Accept remote" action buttons.
-2. **Alerts tab** in the main app window — a scrollable list of pending and recently resolved conflicts; badge count in the tray menu.
+1. **Toast notification** at conflict time — "Keep local" / "Accept remote" action buttons. *(Not yet implemented — pending the OAuth/desktop-notification path.)*
+2. **Alerts tab** — implemented. A scrollable list of pending conflicts (in the Settings window and as a standalone window opened from the tray), each showing the local-vs-remote summary with **Keep local** / **Accept remote** buttons. A "⚠ N sync conflicts" item appears in the tray menu when conflicts are pending (refreshed after each sync and on a 60-second tick). "Accept remote" just marks the conflict resolved (remote-wins was already applied); "Keep local" restores the preserved local version (`syncer.ResolveKeepLocal`).
 
 `last-write-wins` is available as a power-user override via `[sync] conflict_resolution = "last-write-wins"` in `config.toml`. See ADR-0007.
 

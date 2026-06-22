@@ -26,6 +26,7 @@ import (
 	"pycalendar/internal/config"
 	"pycalendar/internal/credstore"
 	"pycalendar/internal/icsimport"
+	"pycalendar/internal/syncer"
 	"pycalendar/internal/syncwire"
 )
 
@@ -652,12 +653,18 @@ func ShowSettingsWindow() {
 	w := a.NewWindow("Settings")
 	w.Resize(fyne.NewSize(520, 520))
 
+	alertsLabel := "Alerts"
+	if n, err := syncer.CountPendingConflicts(); err == nil && n > 0 {
+		alertsLabel = fmt.Sprintf("Alerts (%d)", n)
+	}
+
 	tabs := container.NewAppTabs(
 		container.NewTabItem("General", buildGeneralTab()),
 		container.NewTabItem("Notifications", buildNotificationsTab()),
 		container.NewTabItem("Appearance", buildAppearanceTab()),
 		container.NewTabItem("Calendars", buildCalendarsTab()),
 		container.NewTabItem("Categories", buildCategoriesSettingsTab()),
+		container.NewTabItem(alertsLabel, buildAlertsTab()),
 		container.NewTabItem("Logs", buildLogsTab()),
 		container.NewTabItem("Import", buildImportTab()),
 	)
@@ -941,6 +948,7 @@ func buildCalendarsTab() fyne.CanvasObject {
 							syncStatus.SetText("Synced just now")
 						}
 						syncBtn.Enable()
+						RefreshTrayBadge()
 					}()
 				}
 				row.Add(syncBtn)
