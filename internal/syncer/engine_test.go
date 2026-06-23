@@ -15,11 +15,12 @@ import (
 
 // mockAdapter implements syncer.Adapter for engine tests.
 type mockAdapter struct {
-	changes  []syncer.RemoteChange
-	pushErr  error
-	fetchErr error
-	pushed   []api.Event
-	deleted  []string
+	changes    []syncer.RemoteChange
+	pushErr    error
+	fetchErr   error
+	pushResult syncer.PushResult
+	pushed     []api.Event
+	deleted    []string
 }
 
 func (m *mockAdapter) FetchChanges(_ context.Context, _ *syncer.SyncState) ([]syncer.RemoteChange, error) {
@@ -28,7 +29,7 @@ func (m *mockAdapter) FetchChanges(_ context.Context, _ *syncer.SyncState) ([]sy
 
 func (m *mockAdapter) PushChange(_ context.Context, _ *syncer.SyncState, e api.Event) (syncer.PushResult, error) {
 	m.pushed = append(m.pushed, e)
-	return syncer.PushResult{}, m.pushErr
+	return m.pushResult, m.pushErr
 }
 
 func (m *mockAdapter) DeleteRemote(_ context.Context, _ *syncer.SyncState, resourceURL string) error {
@@ -156,6 +157,80 @@ func TestEngine_SyncAll_ContinuesAfterError(t *testing.T) {
 	status := eng.Status(2)
 	if status.LastSyncAt.IsZero() {
 		t.Error("calendar 2 should have synced even though calendar 1 failed")
+	}
+}
+
+func TestEngine_Sync_PushesOutboxUpsert_AndLinksResource(t *testing.T) {
+	testutil.NewTestDB(t)
+
+	calID, err := api.CreateCalendar("Work", "#3B82F6", api.CalendarTypeCalDAV)
+	if err != nil {
+		t.Fatalf("CreateCalendar: %v", err)
+	}
+	// Creating an event on a synced calendar enqueues an upsert.
+	evID, err := api.CreateEvent("Pushed", time.Now(), nil, "", nil, "", false, "UTC", calID, "", "")
+	if err != nil {
+		t.Fatalf("CreateEvent: %v", err)
+	}
+
+	adapter := &mockAdapter{pushResult: syncer.PushResult{ResourceURL: "https://remote/ev.ics", ETag: "etag-x"}}
+	eng := syncer.New(time.Minute)
+	eng.RegisterAdapter(calID, adapter)
+
+	if err := eng.Sync(context.Background(), calID); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if len(adapter.pushed) != 1 {
+		t.Fatalf("adapter received %d pushes, want 1", len(adapter.pushed))
+	}
+	if pend, _ := api.PendingOutbox(calID); len(pend) != 0 {
+		t.Errorf("outbox has %d entries after push, want 0", len(pend))
+	}
+	ev, err := api.GetEvent(evID)
+	if err != nil {
+		t.Fatalf("GetEvent: %v", err)
+	}
+	if ev.ResourceURL.String != "https://remote/ev.ics" {
+		t.Errorf("event resource_url = %q, want the pushed URL (so the next fetch won't duplicate it)", ev.ResourceURL.String)
+	}
+}
+
+func TestEngine_Sync_PushesOutboxDelete(t *testing.T) {
+	db := testutil.NewTestDB(t)
+
+	calID, err := api.CreateCalendar("Work", "#3B82F6", api.CalendarTypeCalDAV)
+	if err != nil {
+		t.Fatalf("CreateCalendar: %v", err)
+	}
+	// Seed an already-synced event (has resource_url) directly, then delete it.
+	var evID int64
+	row := db.QueryRow(`
+		INSERT INTO events (title, start_ts, updated_ts, created_ts, calendar_id, resource_url)
+		VALUES ('ToDelete', ?, ?, ?, ?, 'https://remote/del.ics')
+		RETURNING id`,
+		time.Now().Unix(), time.Now().Unix(), time.Now().Unix(), calID,
+	)
+	if err := row.Scan(&evID); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	if err := api.DeleteEvent(evID); err != nil { // enqueues a delete
+		t.Fatalf("DeleteEvent: %v", err)
+	}
+
+	adapter := &mockAdapter{}
+	eng := syncer.New(time.Minute)
+	eng.RegisterAdapter(calID, adapter)
+
+	if err := eng.Sync(context.Background(), calID); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if len(adapter.deleted) != 1 || adapter.deleted[0] != "https://remote/del.ics" {
+		t.Errorf("adapter.deleted = %v, want [https://remote/del.ics]", adapter.deleted)
+	}
+	if pend, _ := api.PendingOutbox(calID); len(pend) != 0 {
+		t.Errorf("outbox has %d entries after delete push, want 0", len(pend))
 	}
 }
 

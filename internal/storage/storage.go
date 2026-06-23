@@ -197,6 +197,7 @@ var migrations = []migration{
 	{version: 2, run: migrateV2},
 	{version: 3, run: migrateV3},
 	{version: 4, run: migrateV4},
+	{version: 5, run: migrateV5},
 }
 
 func migrateV1(db *sql.DB) error {
@@ -337,6 +338,29 @@ func migrateV4(db *sql.DB) error {
 			resolution  TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_conflicts_calendar ON conflicts(calendar_id, resolved_at)`,
+	}
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil && !isAlreadyExists(err) {
+			return fmt.Errorf("stmt %q: %w", s[:min(40, len(s))], err)
+		}
+	}
+	return nil
+}
+
+func migrateV5(db *sql.DB) error {
+	stmts := []string{
+		// sync_outbox — queue of local changes awaiting push to a remote
+		// calendar. 'op' is 'upsert' or 'delete'; resource_url is required for
+		// delete (the local row is gone by then) and set on upsert once known.
+		`CREATE TABLE IF NOT EXISTS sync_outbox (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			calendar_id  INTEGER NOT NULL,
+			event_id     INTEGER,
+			op           TEXT    NOT NULL,
+			resource_url TEXT,
+			queued_ts    INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbox_calendar ON sync_outbox(calendar_id)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil && !isAlreadyExists(err) {

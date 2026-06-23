@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -206,6 +207,10 @@ func (e *Engine) syncOne(ctx context.Context, calendarID int64, a Adapter) error
 		return fmt.Errorf("syncer %d: load state: %w", calendarID, err)
 	}
 
+	// Push local changes first so our own writes are reflected on the remote
+	// before we pull (and so the pull's etag check skips the echo).
+	e.drainOutbox(ctx, calendarID, a, state)
+
 	changes, err := a.FetchChanges(ctx, state)
 	if err != nil {
 		e.setStatus(calendarID, SyncStatus{CalendarID: calendarID, LastError: err})
@@ -241,10 +246,70 @@ func (e *Engine) setStatus(calendarID int64, s SyncStatus) {
 	e.mu.Unlock()
 }
 
+// drainOutbox pushes every queued local change for calendarID to the remote,
+// removing each entry on success and leaving failed ones for the next sync.
+func (e *Engine) drainOutbox(ctx context.Context, calendarID int64, a Adapter, state *SyncState) {
+	entries, err := api.PendingOutbox(calendarID)
+	if err != nil {
+		slog.Warn("syncer: load outbox failed", "calendar", calendarID, "err", err)
+		return
+	}
+	for _, en := range entries {
+		if err := pushOne(ctx, a, state, en); err != nil {
+			slog.Warn("syncer: push failed", "op", en.Op, "url", en.ResourceURL, "err", err)
+			continue // keep the entry for retry on the next sync
+		}
+		if err := api.DeleteOutboxEntry(en.ID); err != nil {
+			slog.Warn("syncer: clear outbox entry failed", "id", en.ID, "err", err)
+		}
+	}
+}
+
+// pushOne sends a single queued change to the remote and, for a create, links
+// the local event to the resource it now occupies.
+func pushOne(ctx context.Context, a Adapter, state *SyncState, en api.OutboxEntry) error {
+	switch en.Op {
+	case api.OutboxDelete:
+		if en.ResourceURL == "" {
+			return nil // nothing to delete remotely
+		}
+		return a.DeleteRemote(ctx, state, en.ResourceURL)
+
+	case api.OutboxUpsert:
+		ev, err := api.GetEvent(en.EventID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil // event deleted locally since enqueue; drop
+			}
+			return err
+		}
+		res, err := a.PushChange(ctx, state, ev)
+		if err != nil {
+			return err
+		}
+		if res.ResourceURL != "" && (!ev.ResourceURL.Valid || ev.ResourceURL.String == "") {
+			if err := api.SetEventResourceURL(ev.ID, res.ResourceURL); err != nil {
+				return err
+			}
+		}
+		if res.ResourceURL != "" && res.ETag != "" {
+			state.SetETag(res.ResourceURL, res.ETag)
+		}
+		return nil
+	}
+	return nil
+}
+
 // applyChange merges one RemoteChange into the local database.
 // On conflict (both local and remote changed since last sync), the conflict is
 // recorded in the Conflict Queue and remote-wins is applied by default (ADR-0007).
 func applyChange(_ context.Context, calendarID int64, ch RemoteChange, state *SyncState) error {
+	// Skip a change we already hold at this ETag — e.g. our own push echoed
+	// back by the next fetch — to avoid a spurious self-conflict.
+	if ch.Type == ChangeUpsert && ch.ETag != "" && state.GetETag(ch.ResourceURL) == ch.ETag {
+		return nil
+	}
+
 	if ch.Type == ChangeDelete {
 		existing, err := api.GetEventByResourceURL(ch.ResourceURL)
 		if err != nil {
@@ -253,7 +318,7 @@ func applyChange(_ context.Context, calendarID int64, ch RemoteChange, state *Sy
 			}
 			return err
 		}
-		return api.DeleteEvent(existing.ID)
+		return api.DeleteEventFromRemote(existing.ID)
 	}
 
 	if ch.Event == nil {

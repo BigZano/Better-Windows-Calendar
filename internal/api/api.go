@@ -13,19 +13,19 @@ import (
 // allowedUpdateFields is the whitelist of column names permitted in UpdateEvent.
 // This prevents SQL column injection via dynamic field names.
 var allowedUpdateFields = map[string]bool{
-	"title":            true,
-	"start_ts":         true,
-	"end_ts":           true,
-	"timezone":         true,
-	"notes":            true,
-	"reminder_ts":      true,
-	"recurrence_rule":  true,
-	"all_day":          true,
-	"calendar_id":      true,
-	"location":         true,
-	"url":              true,
-	"parent_event_id":  true,
-	"resource_url":     true,
+	"title":           true,
+	"start_ts":        true,
+	"end_ts":          true,
+	"timezone":        true,
+	"notes":           true,
+	"reminder_ts":     true,
+	"recurrence_rule": true,
+	"all_day":         true,
+	"calendar_id":     true,
+	"location":        true,
+	"url":             true,
+	"parent_event_id": true,
+	"resource_url":    true,
 }
 
 // Event mirrors the events table schema.
@@ -97,7 +97,6 @@ func CreateEvent(
 		return 0, err
 	}
 
-
 	if calendarID <= 0 {
 		calendarID = 1
 	}
@@ -155,6 +154,11 @@ func CreateEvent(
 	if err != nil {
 		return 0, err
 	}
+	if isSyncedCalendar(calendarID) {
+		if err := enqueueOutbox(calendarID, id, OutboxUpsert, ""); err != nil {
+			slog.Warn("outbox enqueue (create)", "event", id, "err", err)
+		}
+	}
 	slog.Info("created event", "id", id, "title", title)
 	return id, nil
 }
@@ -165,7 +169,6 @@ func GetEvent(id int64) (Event, error) {
 	if err != nil {
 		return Event{}, err
 	}
-
 
 	row := db.QueryRow(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
@@ -181,7 +184,6 @@ func GetUpcoming(limit int) ([]Event, error) {
 	if err != nil {
 		return nil, err
 	}
-
 
 	now := time.Now()
 	// Expand up to 1 year ahead to capture recurring occurrences.
@@ -227,7 +229,6 @@ func GetEvents(startTS, endTS int64) ([]Event, error) {
 		return nil, err
 	}
 
-
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
 		       created_ts, updated_ts, recurrence_rule, all_day,
@@ -261,7 +262,6 @@ func GetDueReminders(windowSeconds int64) ([]Event, error) {
 	if err != nil {
 		return nil, err
 	}
-
 
 	now := time.Now().Unix()
 	rows, err := db.Query(`
@@ -316,26 +316,45 @@ func UpdateEvent(id int64, fields map[string]any) error {
 		return err
 	}
 
-
 	_, err = db.Exec(`UPDATE events SET `+strings.Join(setClauses, ", ")+` WHERE id = ?`, args...)
 	if err != nil {
 		return fmt.Errorf("update event %d: %w", id, err)
+	}
+	if ev, gErr := GetEvent(id); gErr == nil && ev.CalendarID.Valid && isSyncedCalendar(ev.CalendarID.Int64) {
+		resourceURL := ""
+		if ev.ResourceURL.Valid {
+			resourceURL = ev.ResourceURL.String
+		}
+		if err := enqueueOutbox(ev.CalendarID.Int64, id, OutboxUpsert, resourceURL); err != nil {
+			slog.Warn("outbox enqueue (update)", "event", id, "err", err)
+		}
 	}
 	slog.Info("updated event", "id", id)
 	return nil
 }
 
-// DeleteEvent removes the event with the given ID.
+// DeleteEvent removes the event with the given ID. If it belongs to a synced
+// calendar and has a remote resource, a delete is queued in the outbox before
+// the row is removed (the resource URL is unavailable afterwards).
 func DeleteEvent(id int64) error {
 	db, err := openDB()
 	if err != nil {
 		return err
 	}
 
+	// Capture sync metadata before the row disappears.
+	ev, gErr := GetEvent(id)
 
 	_, err = db.Exec(`DELETE FROM events WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete event %d: %w", id, err)
+	}
+
+	if gErr == nil && ev.ResourceURL.Valid && ev.ResourceURL.String != "" &&
+		ev.CalendarID.Valid && isSyncedCalendar(ev.CalendarID.Int64) {
+		if err := enqueueOutbox(ev.CalendarID.Int64, id, OutboxDelete, ev.ResourceURL.String); err != nil {
+			slog.Warn("outbox enqueue (delete)", "event", id, "err", err)
+		}
 	}
 	slog.Info("deleted event", "id", id)
 	return nil
@@ -348,7 +367,6 @@ func GetEventsByCalendar(calendarID, startTS, endTS int64) ([]Event, error) {
 	if err != nil {
 		return nil, err
 	}
-
 
 	rows, err := db.Query(`
 		SELECT id, title, start_ts, end_ts, timezone, notes, reminder_ts,
@@ -406,7 +424,6 @@ func CountEventsForCalendar(calID int64) (int, error) {
 		return 0, err
 	}
 
-
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE calendar_id = ?`, calID).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count events for calendar: %w", err)
@@ -421,7 +438,6 @@ func ReassignCalendarEvents(fromCalID, toCalID int64) error {
 		return err
 	}
 
-
 	if _, err := db.Exec(`UPDATE events SET calendar_id = ? WHERE calendar_id = ?`, toCalID, fromCalID); err != nil {
 		return fmt.Errorf("reassign calendar events %d→%d: %w", fromCalID, toCalID, err)
 	}
@@ -434,7 +450,6 @@ func DeleteEventsByCalendar(calID int64) error {
 	if err != nil {
 		return err
 	}
-
 
 	if _, err := db.Exec(`DELETE FROM events WHERE calendar_id = ?`, calID); err != nil {
 		return fmt.Errorf("delete events for calendar %d: %w", calID, err)
