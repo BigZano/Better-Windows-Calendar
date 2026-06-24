@@ -127,7 +127,9 @@ Blocked on the Event detail view existing — not low value, just sequentially d
 
 The process of pulling Events from a remote CalDAV, Google Calendar, or Outlook Calendar (Microsoft Graph) into the local SQLite store, and pushing local changes back. Sync state (sync token, per-resource ETags) is persisted in `sync_state` so incremental syncs are possible.
 
-**Milestone 2 (sync milestone).** The schema, both Adapters (CalDAV, Microsoft Graph), and the Sync Engine are implemented and wired into the tray and daemon run modes via the `syncwire` boot package. CalDAV is reachable end-to-end from the UI today: the Calendars settings tab adds a CalDAV Calendar (URL + username + app-password → keyring) and offers a per-Calendar **Sync Now** button. Calendars added or removed at runtime register with the live engine immediately (`syncwire.RegisterCalendar`/`UnregisterCalendar`); the engine also runs a background sync on its timer. Microsoft Graph is implemented but inert until the OAuth login flow (ADR-0005: custom URI scheme, single-instance mutex, named-pipe IPC) lands — there is no way to obtain a refresh token yet. `.ics` file import is implemented as an in-app Import Dialog (see below); file-association/double-click launch is deferred to the OAuth slice.
+**Milestone 2 (sync milestone).** The schema, both Adapters (CalDAV, Microsoft Graph), and the Sync Engine are implemented and wired into the tray and daemon run modes via the `syncwire` boot package. CalDAV is reachable end-to-end from the UI today: the Calendars settings tab adds a CalDAV Calendar (URL + username + app-password → keyring) and offers a per-Calendar **Sync Now** button. Calendars added or removed at runtime register with the live engine immediately (`syncwire.RegisterCalendar`/`syncwire.UnregisterCalendar`); the engine also runs a background sync on its timer.
+
+Microsoft Graph (Outlook) is now reachable end-to-end too. The initial OAuth login uses the **loopback redirect + PKCE (S256)** flow (ADR-0008), implemented in the `internal/graphauth` package and surfaced as **Connect Outlook** in the Add Calendar dialog: choosing the **Outlook** Calendar type reveals a "Connect Microsoft account" button that runs `graphauth.Login` (open the system browser → 127.0.0.1 loopback callback → exchange the code for tokens), then `msgraph.ListCalendars` lists the account's Outlook calendars for the user to pick. On Save the picked Graph calendar ID is stored as the Calendar's `sync_url`, the refresh token goes to the CredentialStore, and the Calendar registers with the live engine. This **needs a user-supplied `microsoft_client_id`** in `config.toml` (no built-in default ships — see `docs/azure-app-registration.md`); the dialog refuses to connect until it is set. ADR-0008 supersedes ADR-0005's OAuth-callback mechanism (custom `pycalendar://` URI scheme, single-instance mutex, named-pipe IPC); that machinery survives only as a future slice for `.ics` file-association launch. `.ics` file import is implemented as an in-app Import Dialog (see below); file-association/double-click launch remains deferred to that later slice.
 
 Sync is two-way. Pull: each sync `FetchChanges` from the remote and applies upserts/deletes to the local store. Push: local create/update/delete on a synced Calendar enqueue an entry in the `sync_outbox` table (`upsert`/`delete`); each sync drains the outbox before pulling, calling `PushChange`/`DeleteRemote`. A create-push links the local Event to its newly assigned remote resource (`resource_url`) so the next fetch recognises it rather than re-importing a duplicate; the matching ETag also lets `applyChange` skip our own change when the remote echoes it back. Remote-originated writes use the non-enqueueing `…FromRemote` API helpers so they are never echoed back to the server.
 
@@ -166,9 +168,9 @@ The module that manages OAuth tokens and Basic Auth credentials for sync-enabled
 - `StoreCalDAV(calendarID, username, password string) error`
 - `GetCalDAV(calendarID) (username, password string, error)`
 
-`OAuthToken` holds `{refresh_token []byte, scope string, obtained_at time.Time}`. The access token is never stored — it is fetched fresh from the provider on every sync operation and zeroed after use (see ADR-0004). All token values are `[]byte`, not `string`, to allow explicit memory zeroing.
+`OAuthToken` holds `{refresh_token []byte, scope string, obtained_at time.Time}`. The access token is never stored — it is fetched fresh from the provider on every sync operation and zeroed after use (see ADR-0004). All token values are `[]byte`, not `string`, to allow explicit memory zeroing. The **first** refresh token is obtained by the **Connect Outlook** login (`internal/graphauth`, ADR-0008); the Adapter then exchanges it for access tokens (and rotates it) on every sync.
 
-OAuth client IDs ship as built-in defaults in the binary. Per-provider overrides live in `config.toml` under `[oauth]` (`microsoft_client_id`, `google_client_id`). The OS keyring (via `internal/keychain`) is the backing store; the `credential_index` table tracks every keyring entry for clean uninstall.
+OAuth client IDs are **user-supplied**, not built-in — no client ID ships in this open-source binary. The Microsoft client ID lives in `config.toml` under `[oauth] microsoft_client_id` (and a future `google_client_id`); Connect Outlook refuses to run until it is set (see `docs/azure-app-registration.md`). The OS keyring (via `internal/keychain`) is the backing store; the `credential_index` table tracks every keyring entry for clean uninstall.
 
 **Do not say:** "credential manager", "token store". Say: **CredentialStore**.
 
@@ -237,8 +239,9 @@ A dedicated configuration window (separate from any main calendar window). Store
 - Sound toggle
 - Autostart toggle
 - Mute invite prompts (per-Calendar)
+- Calendars tab: add a CalDAV Calendar (URL + username + app-password) or an **Outlook** Calendar via **Connect Microsoft account** (loopback+PKCE login, then pick a calendar — ADR-0008); per-Calendar **Sync Now**
 - Sync tab: per-Calendar sync URL, auth flow trigger, sync interval, conflict resolution policy (`remote-wins` default; `last-write-wins` power-user option)
-- OAuth tab: optional per-provider client ID overrides (`microsoft_client_id`, `google_client_id`)
+- OAuth: the **user-supplied** Microsoft client ID (`config.toml` `[oauth] microsoft_client_id`; no built-in default — required for Connect Outlook) and a future `google_client_id`
 
 ---
 

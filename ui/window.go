@@ -24,6 +24,8 @@ import (
 	"pycalendar/internal/barsetup"
 	"pycalendar/internal/config"
 	"pycalendar/internal/credstore"
+	"pycalendar/internal/graphauth"
+	"pycalendar/internal/msgraph"
 	"pycalendar/internal/syncer"
 	"pycalendar/internal/syncwire"
 )
@@ -1155,26 +1157,59 @@ func ShowEditCalendarWindow(cal api.Calendar, onSave func()) {
 		formRow("App password:", passEntry),
 	)
 
+	// ---- Outlook (Microsoft Graph) fields (shown only when type is Outlook) ----
+	// outlook holds the in-flight login result and the picked Graph calendar.
+	// Populated by the Connect handler; consumed by the save handler.
+	outlook := &outlookConnectState{}
+	outlookStatus := canvas.NewText("", color.RGBA{R: 100, G: 100, B: 100, A: 255})
+	outlookCalSelect := widget.NewSelect(nil, func(label string) {
+		outlook.selectCalendar(label)
+	})
+	outlookCalSelect.Hide()
+	connectBtn := widget.NewButton("Connect Microsoft account", nil)
+	connectBtn.OnTapped = func() {
+		startOutlookConnect(connectBtn, outlookStatus, outlookCalSelect, outlook)
+	}
+	outlookBox := container.NewVBox(
+		widget.NewLabel("Sign in with your Microsoft account to connect an Outlook calendar."),
+		connectBtn,
+		outlookStatus,
+		formRow("Calendar:", outlookCalSelect),
+	)
+
 	// ---- Type selector ----
-	typeForLabel := map[string]string{"Local": api.CalendarTypeLocal, "CalDAV": api.CalendarTypeCalDAV}
+	typeForLabel := map[string]string{
+		"Local":   api.CalendarTypeLocal,
+		"CalDAV":  api.CalendarTypeCalDAV,
+		"Outlook": api.CalendarTypeOutlook,
+	}
 	selectedType := api.CalendarTypeLocal
 	if cal.Type != "" {
 		selectedType = cal.Type
 	}
-	typeSelect := widget.NewSelect([]string{"Local", "CalDAV"}, func(label string) {
-		selectedType = typeForLabel[label]
-		if selectedType == api.CalendarTypeCalDAV {
-			caldavBox.Show()
-		} else {
-			caldavBox.Hide()
-		}
-	})
-	if selectedType == api.CalendarTypeCalDAV {
-		typeSelect.SetSelected("CalDAV")
-	} else {
-		typeSelect.SetSelected("Local")
+	applyTypeVisibility := func() {
 		caldavBox.Hide()
+		outlookBox.Hide()
+		switch selectedType {
+		case api.CalendarTypeCalDAV:
+			caldavBox.Show()
+		case api.CalendarTypeOutlook:
+			outlookBox.Show()
+		}
 	}
+	typeSelect := widget.NewSelect([]string{"Local", "CalDAV", "Outlook"}, func(label string) {
+		selectedType = typeForLabel[label]
+		applyTypeVisibility()
+	})
+	switch selectedType {
+	case api.CalendarTypeCalDAV:
+		typeSelect.SetSelected("CalDAV")
+	case api.CalendarTypeOutlook:
+		typeSelect.SetSelected("Outlook")
+	default:
+		typeSelect.SetSelected("Local")
+	}
+	applyTypeVisibility()
 	if cal.ID != 0 {
 		typeSelect.Disable() // type is fixed after creation
 	}
@@ -1235,6 +1270,49 @@ func ShowEditCalendarWindow(cal api.Calendar, onSave func()) {
 			if err := syncwire.RegisterCalendar(calID); err != nil {
 				slog.Warn("register calendar for sync", "id", calID, "err", err)
 			}
+		} else if selectedType == api.CalendarTypeOutlook {
+			if cal.ID != 0 {
+				// Editing an existing Outlook calendar only updates name/color;
+				// the connection is fixed after creation.
+				if err := api.UpdateCalendar(cal.ID, map[string]any{
+					"name": name, "color": hexColor,
+				}); err != nil {
+					fail("Failed: " + err.Error())
+					return
+				}
+			} else {
+				if !outlook.connected() {
+					fail("Connect a Microsoft account first")
+					return
+				}
+				graphCalID, graphCalName := outlook.picked()
+				if graphCalID == "" {
+					fail("Select a calendar to connect")
+					return
+				}
+				calName := name
+				if calName == "" {
+					calName = graphCalName
+				}
+				calID, err := api.CreateCalendar(calName, hexColor, api.CalendarTypeOutlook)
+				if err != nil {
+					fail("Failed: " + err.Error())
+					return
+				}
+				if err := api.UpdateCalendar(calID, map[string]any{
+					"name": calName, "color": hexColor, "sync_url": graphCalID,
+				}); err != nil {
+					fail("Failed: " + err.Error())
+					return
+				}
+				if err := outlook.storeToken(calID); err != nil {
+					fail("Failed to save credentials: " + err.Error())
+					return
+				}
+				if err := syncwire.RegisterCalendar(calID); err != nil {
+					slog.Warn("register calendar for sync", "id", calID, "err", err)
+				}
+			}
 		} else {
 			if cal.ID == 0 {
 				if _, err := api.CreateCalendar(name, hexColor, api.CalendarTypeLocal); err != nil {
@@ -1266,12 +1344,142 @@ func ShowEditCalendarWindow(cal api.Calendar, onSave func()) {
 		presetRow,
 		container.NewHBox(swatch, formRow("Hex (#RRGGBB):", hexEntry)),
 		caldavBox,
+		outlookBox,
 		errorLabel,
 		container.NewHBox(saveBtn, cancelBtn),
 	)
 
 	w.SetContent(form)
 	w.Show()
+}
+
+// outlookConnectState holds the tokens and discovered calendars produced by a
+// "Connect Microsoft account" login, plus the user's calendar pick. It is the
+// bridge between the async Connect handler and the synchronous save handler.
+// Token bytes are zeroed by storeToken once persisted (ADR-0004).
+type outlookConnectState struct {
+	refreshToken []byte
+	accessToken  []byte
+	calendars    []msgraph.Calendar
+	pickedID     string
+	pickedName   string
+}
+
+// connected reports whether a successful login has produced a refresh token.
+func (s *outlookConnectState) connected() bool { return len(s.refreshToken) > 0 }
+
+// picked returns the chosen Graph calendar ID and display name.
+func (s *outlookConnectState) picked() (id, name string) { return s.pickedID, s.pickedName }
+
+// selectCalendar records the user's pick from the calendar Select by label.
+func (s *outlookConnectState) selectCalendar(label string) {
+	for _, c := range s.calendars {
+		if c.Name == label {
+			s.pickedID = c.ID
+			s.pickedName = c.Name
+			return
+		}
+	}
+}
+
+// storeToken persists the refresh token for calID and zeroes both token slices.
+func (s *outlookConnectState) storeToken(calID int64) error {
+	tok := credstore.OAuthToken{
+		RefreshToken: s.refreshToken,
+		Scope:        "Calendars.ReadWrite offline_access",
+		ObtainedAt:   time.Now(),
+	}
+	err := credstore.StoreOAuthToken(calID, tok)
+	tok.Zero() // zeroes s.refreshToken (shared backing array)
+	s.refreshToken = nil
+	zeroBytes(s.accessToken)
+	s.accessToken = nil
+	return err
+}
+
+// startOutlookConnect runs the loopback+PKCE login on a goroutine (it blocks on
+// the browser), then lists the account's calendars and populates the picker.
+// UI mutations are marshalled back onto the Fyne main loop via fyne.Do.
+func startOutlookConnect(btn *widget.Button, status *canvas.Text, calSelect *widget.Select, state *outlookConnectState) {
+	cfg, err := config.Load()
+	if err != nil {
+		status.Text = "Could not load config: " + err.Error()
+		status.Refresh()
+		return
+	}
+	clientID := cfg.OAuth.MicrosoftClientID
+	if clientID == "" {
+		status.Text = "Set microsoft_client_id in config.toml — see docs/azure-app-registration.md"
+		status.Refresh()
+		return
+	}
+
+	btn.Disable()
+	status.Text = "Waiting for browser…"
+	status.Refresh()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		defer cancel()
+
+		refresh, access, err := graphauth.Login(ctx, graphauth.Config{
+			ClientID:     clientID,
+			AuthorizeURL: "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
+			TokenURL:     "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
+			Scopes:       []string{"Calendars.ReadWrite", "offline_access"},
+		})
+		if err != nil {
+			fyne.Do(func() {
+				status.Text = "Sign-in failed: " + err.Error()
+				status.Refresh()
+				btn.Enable()
+			})
+			return
+		}
+
+		cals, err := msgraph.ListCalendars(ctx, access, "")
+		if err != nil {
+			zeroBytes(refresh)
+			zeroBytes(access)
+			fyne.Do(func() {
+				status.Text = "Connected, but could not list calendars: " + err.Error()
+				status.Refresh()
+				btn.Enable()
+			})
+			return
+		}
+
+		fyne.Do(func() {
+			state.refreshToken = refresh
+			state.accessToken = access
+			state.calendars = cals
+
+			names := make([]string, len(cals))
+			defaultIdx := 0
+			for i, c := range cals {
+				names[i] = c.Name
+				if c.Name == "Calendar" {
+					defaultIdx = i
+				}
+			}
+			calSelect.Options = names
+			calSelect.Show()
+			if len(cals) > 0 {
+				calSelect.SetSelected(names[defaultIdx])
+			}
+			status.Text = "Connected — pick a calendar and Save"
+			status.Refresh()
+			btn.SetText("Reconnect Microsoft account")
+			btn.Enable()
+		})
+	}()
+}
+
+// zeroBytes overwrites b in place (ADR-0004).
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 // lastSyncedLabel renders a Calendar's last successful sync time for the
