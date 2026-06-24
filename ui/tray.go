@@ -134,6 +134,12 @@ func RunTray() {
 		}
 	}()
 
+	// If launched with an .ics path (file-association double-click on the primary
+	// instance), open the Import Dialog once the event loop is running. Done on a
+	// goroutine because OpenImportPath marshals its UI work via fyne.Do, which
+	// requires the loop started by a.Run() to be live.
+	go openPendingImportPath()
+
 	a.Run()
 
 	stopSync()

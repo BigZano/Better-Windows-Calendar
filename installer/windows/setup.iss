@@ -48,6 +48,29 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
   ValueType: string; ValueName: "PyCalendar"; ValueData: """{app}\{#MyAppExeName}"""; \
   Flags: uninsdeletevalue; Tasks: autostart
 
+; --- .ics file association (ProgID + association only) ---
+; Windows 10/11 UserChoice blocks forcing the *default* handler programmatically,
+; so we register a ProgID and advertise it for .ics; the user opts in via
+; "Open with" / Default Apps. HKA routes to HKLM under the admin install (or HKCU
+; for a per-user install). uninsdeletekey/value undo everything on uninstall.
+;
+; ProgID: friendly type name + open command. "%1" is the double-clicked file's
+; path, handed to the running tray via single-instance IPC (or a fresh tray).
+Root: HKA; Subkey: "Software\Classes\PyCalendar.ics"; \
+  ValueType: string; ValueName: ""; ValueData: "iCalendar event"; \
+  Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\PyCalendar.ics\DefaultIcon"; \
+  ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; \
+  Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\PyCalendar.ics\shell\open\command"; \
+  ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; \
+  Flags: uninsdeletekey
+; Associate the .ics extension with our ProgID without seizing the default:
+; OpenWithProgids adds PyCalendar.ics to the "Open with" list for .ics files.
+Root: HKA; Subkey: "Software\Classes\.ics\OpenWithProgids"; \
+  ValueType: string; ValueName: "PyCalendar.ics"; ValueData: ""; \
+  Flags: uninsdeletevalue
+
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; \
   Flags: nowait postinstall skipifsilent

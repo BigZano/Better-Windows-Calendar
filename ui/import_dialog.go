@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -54,9 +55,9 @@ func ShowImportDialog(parentWin fyne.Window, defaultCalID int64) {
 			return
 		}
 
-		preview, parseErr := icsimport.Parse(bytes.NewReader(data))
+		preview, parseErr := parsePreviewBytes(data)
 		if parseErr != nil {
-			dialog.ShowError(fmt.Errorf("could not read .ics file: %w", parseErr), parentWin)
+			dialog.ShowError(parseErr, parentWin)
 			return
 		}
 
@@ -84,6 +85,93 @@ func readImportFile(rc fyne.URIReadCloser) ([]byte, error) {
 	}
 	if len(data) > maxImportFileBytes {
 		return nil, fmt.Errorf("file is too large; the limit is 10 MB")
+	}
+	return data, nil
+}
+
+// parsePreviewBytes parses already-read .ics bytes into a Preview, wrapping any
+// parse error in the user-facing "could not read .ics file" message. Shared by
+// the file-picker dialog and the path-based file-association entry.
+func parsePreviewBytes(data []byte) (*icsimport.Preview, error) {
+	preview, err := icsimport.Parse(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("could not read .ics file: %w", err)
+	}
+	return preview, nil
+}
+
+// pendingImportPath holds an .ics path supplied on the command line (a
+// double-clicked file when this process is the primary instance) so RunTray can
+// open it once the Fyne driver is up. Package-level state mirrors how this
+// package already holds fyneApp / calendarWindowReload.
+var pendingImportPath string
+
+// SetPendingImportPath records an .ics path to open once the tray's Fyne loop is
+// ready. Called from main before RunTray when the primary instance was launched
+// with a positional .ics argument.
+func SetPendingImportPath(path string) { pendingImportPath = path }
+
+// openPendingImportPath consumes any path set via SetPendingImportPath, opening
+// the Import Dialog for it. Called from RunTray after the Fyne app is built.
+func openPendingImportPath() {
+	if pendingImportPath == "" {
+		return
+	}
+	path := pendingImportPath
+	pendingImportPath = ""
+	OpenImportPath(path)
+}
+
+// OpenImportPath reads an .ics file from disk (enforcing the same 10MB guard as
+// the file picker), parses it, and shows the import preview window. It is safe
+// to call from any goroutine — including the single-instance pipe server — as
+// all Fyne UI work is marshalled onto the main loop via fyne.Do.
+func OpenImportPath(path string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+
+	data, err := readImportPath(path)
+	if err == nil {
+		var preview *icsimport.Preview
+		preview, err = parsePreviewBytes(data)
+		if err == nil {
+			a := getFyneApp()
+			fyne.Do(func() { showPreviewWindow(a, preview, 0) })
+			return
+		}
+	}
+
+	// Surface read/parse errors on an available window, or a fresh one.
+	slog.Warn("open import path failed", "path", path, "err", err)
+	fyne.Do(func() {
+		a := getFyneApp()
+		var parent fyne.Window
+		if wins := a.Driver().AllWindows(); len(wins) > 0 {
+			parent = wins[0]
+		} else {
+			parent = a.NewWindow("Import .ics")
+			parent.Resize(fyne.NewSize(420, 160))
+			parent.Show()
+		}
+		dialog.ShowError(err, parent)
+	})
+}
+
+// readImportPath reads an .ics file by filesystem path, enforcing the 10MB limit
+// before reading the full contents.
+func readImportPath(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("open file: %w", err)
+	}
+	if info.Size() > maxImportFileBytes {
+		return nil, fmt.Errorf("file is too large (%d MB); the limit is 10 MB", info.Size()/(1<<20))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
 	}
 	return data, nil
 }

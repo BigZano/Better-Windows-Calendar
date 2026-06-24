@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	fyne.io/fyne/v2 v2.7.3
 	github.com/BurntSushi/toml v1.6.0
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/arran4/golang-ical v0.3.5
 	github.com/gen2brain/beeep v0.11.2
 	github.com/teambition/rrule-go v1.8.2

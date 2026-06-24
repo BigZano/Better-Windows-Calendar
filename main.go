@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"pycalendar/internal/api"
@@ -14,10 +15,23 @@ import (
 	"pycalendar/internal/config"
 	"pycalendar/internal/daemon"
 	"pycalendar/internal/keychain"
+	"pycalendar/internal/singleinstance"
 	"pycalendar/internal/storage"
 	"pycalendar/internal/syncwire"
 	"pycalendar/ui"
 )
+
+// firstICSArg returns the first positional argument whose name ends in ".ics"
+// (case-insensitive), or "" if none. Used to route a double-clicked .ics file
+// to the Import Dialog.
+func firstICSArg(args []string) string {
+	for _, a := range args {
+		if strings.HasSuffix(strings.ToLower(a), ".ics") {
+			return a
+		}
+	}
+	return ""
+}
 
 // setupLogFile opens (or creates) the log file and redirects slog to write to
 // both stderr and the file. Returns the open file so the caller can defer Close.
@@ -52,6 +66,34 @@ func main() {
 	case "tray":
 		if f := setupLogFile(); f != nil {
 			defer f.Close()
+		}
+
+		// Single-instance + .ics file association (Windows; no-op elsewhere). A
+		// double-clicked .ics arrives as a positional arg; route it to the
+		// already-running tray rather than starting a second process.
+		icsPath := firstICSArg(flag.Args())
+		primary, release, err := singleinstance.Acquire(func(p string) {
+			ui.OpenImportPath(p)
+		})
+		if err != nil {
+			// Never block startup on IPC failure — degrade to running as primary.
+			slog.Warn("single-instance acquire failed; continuing as primary", "err", err)
+			primary = true
+		}
+		if !primary {
+			// A tray is already running. Hand off any .ics path and exit quietly.
+			if icsPath != "" {
+				if ferr := singleinstance.Forward(icsPath); ferr != nil {
+					slog.Warn("failed to forward .ics path to running instance", "err", ferr)
+				}
+			}
+			return
+		}
+		if release != nil {
+			defer release()
+		}
+		if icsPath != "" {
+			ui.SetPendingImportPath(icsPath)
 		}
 		ui.RunTray()
 
