@@ -198,6 +198,7 @@ var migrations = []migration{
 	{version: 3, run: migrateV3},
 	{version: 4, run: migrateV4},
 	{version: 5, run: migrateV5},
+	{version: 6, run: migrateV6},
 }
 
 func migrateV1(db *sql.DB) error {
@@ -361,6 +362,20 @@ func migrateV5(db *sql.DB) error {
 			queued_ts    INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_outbox_calendar ON sync_outbox(calendar_id)`,
+	}
+	for _, s := range stmts {
+		if _, err := db.Exec(s); err != nil && !isAlreadyExists(err) {
+			return fmt.Errorf("stmt %q: %w", s[:min(40, len(s))], err)
+		}
+	}
+	return nil
+}
+
+func migrateV6(db *sql.DB) error {
+	stmts := []string{
+		// uid — iCal UID for imported events, used for import deduplication.
+		`ALTER TABLE events ADD COLUMN uid TEXT`,
+		`CREATE INDEX IF NOT EXISTS idx_events_uid ON events(uid)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil && !isAlreadyExists(err) {

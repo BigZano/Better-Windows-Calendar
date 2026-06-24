@@ -17,7 +17,6 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
 	"pycalendar/internal/api"
@@ -25,7 +24,6 @@ import (
 	"pycalendar/internal/barsetup"
 	"pycalendar/internal/config"
 	"pycalendar/internal/credstore"
-	"pycalendar/internal/icsimport"
 	"pycalendar/internal/syncer"
 	"pycalendar/internal/syncwire"
 )
@@ -1370,70 +1368,26 @@ func buildLogsTab() fyne.CanvasObject {
 // ---- Import tab ----
 
 func buildImportTab() fyne.CanvasObject {
-	a := getFyneApp()
-
-	cals, _ := api.GetCalendars()
-	calNames := make([]string, len(cals))
-	calIDs := make([]int64, len(cals))
-	for i, c := range cals {
-		calNames[i] = c.Name
-		calIDs[i] = c.ID
-	}
-	if len(calNames) == 0 {
-		calNames = []string{"Local"}
-		calIDs = []int64{1}
-	}
-
-	calSelect := widget.NewSelect(calNames, nil)
-	calSelect.SetSelectedIndex(0)
-
-	statusLbl := canvas.NewText("", color.RGBA{R: 200, G: 200, B: 200, A: 255})
-
-	importBtn := widget.NewButton("Choose .ics file…", func() {
-		dialog.ShowFileOpen(func(f fyne.URIReadCloser, err error) {
-			if err != nil || f == nil {
-				return
-			}
-			defer f.Close()
-
-			calID := calIDs[0]
-			if idx := calSelect.SelectedIndex(); idx >= 0 && idx < len(calIDs) {
-				calID = calIDs[idx]
-			}
-
-			res, impErr := icsimport.Import(f, calID)
-			if impErr != nil {
-				statusLbl.Color = color.RGBA{R: 220, G: 60, B: 60, A: 255}
-				statusLbl.Text = "Import failed: " + impErr.Error()
-			} else if len(res.Errors) > 0 {
-				statusLbl.Color = color.RGBA{R: 220, G: 160, B: 40, A: 255}
-				statusLbl.Text = fmt.Sprintf("Imported %d, skipped %d (%d errors — see logs)",
-					res.Imported, res.Skipped, len(res.Errors))
-			} else {
-				statusLbl.Color = color.RGBA{R: 80, G: 200, B: 80, A: 255}
-				statusLbl.Text = fmt.Sprintf("Imported %d event(s) successfully", res.Imported)
-			}
-			statusLbl.Refresh()
-
-			if res.Imported > 0 && calendarWindowReload != nil {
-				calendarWindowReload()
-			}
-		}, a.Driver().AllWindows()[0])
-	})
-	importBtn.Importance = widget.HighImportance
-
 	desc := widget.NewLabel(
 		"Import events from any app that exports .ics files:\n" +
 			"Google Calendar, Outlook, Apple Calendar, Thunderbird, etc.\n\n" +
-			"Events are added to the selected calendar. Duplicates are not detected — " +
-			"importing the same file twice will create duplicate events.")
+			"You'll see a preview before anything is added, and you can pick which " +
+			"calendar to import into. Events that already exist (matched by their " +
+			"iCal UID, or title and start time) are skipped automatically.")
 	desc.Wrapping = fyne.TextWrapWord
+
+	importBtn := widget.NewButton("Import .ics file…", func() {
+		var parent fyne.Window
+		if wins := getFyneApp().Driver().AllWindows(); len(wins) > 0 {
+			parent = wins[0]
+		}
+		ShowImportDialog(parent, 1)
+	})
+	importBtn.Importance = widget.HighImportance
 
 	return container.NewVBox(
 		desc,
 		widget.NewSeparator(),
-		formRow("Target calendar:", calSelect),
 		importBtn,
-		statusLbl,
 	)
 }

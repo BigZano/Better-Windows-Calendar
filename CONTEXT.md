@@ -127,7 +127,7 @@ Blocked on the Event detail view existing — not low value, just sequentially d
 
 The process of pulling Events from a remote CalDAV, Google Calendar, or Outlook Calendar (Microsoft Graph) into the local SQLite store, and pushing local changes back. Sync state (sync token, per-resource ETags) is persisted in `sync_state` so incremental syncs are possible.
 
-**Milestone 2 (sync milestone).** The schema, both Adapters (CalDAV, Microsoft Graph), and the Sync Engine are implemented and wired into the tray and daemon run modes via the `syncwire` boot package. CalDAV is reachable end-to-end from the UI today: the Calendars settings tab adds a CalDAV Calendar (URL + username + app-password → keyring) and offers a per-Calendar **Sync Now** button. Calendars added or removed at runtime register with the live engine immediately (`syncwire.RegisterCalendar`/`UnregisterCalendar`); the engine also runs a background sync on its timer. Microsoft Graph is implemented but inert until the OAuth login flow (ADR-0005: custom URI scheme, single-instance mutex, named-pipe IPC) lands — there is no way to obtain a refresh token yet. `.ics` file import is partially implemented.
+**Milestone 2 (sync milestone).** The schema, both Adapters (CalDAV, Microsoft Graph), and the Sync Engine are implemented and wired into the tray and daemon run modes via the `syncwire` boot package. CalDAV is reachable end-to-end from the UI today: the Calendars settings tab adds a CalDAV Calendar (URL + username + app-password → keyring) and offers a per-Calendar **Sync Now** button. Calendars added or removed at runtime register with the live engine immediately (`syncwire.RegisterCalendar`/`UnregisterCalendar`); the engine also runs a background sync on its timer. Microsoft Graph is implemented but inert until the OAuth login flow (ADR-0005: custom URI scheme, single-instance mutex, named-pipe IPC) lands — there is no way to obtain a refresh token yet. `.ics` file import is implemented as an in-app Import Dialog (see below); file-association/double-click launch is deferred to the OAuth slice.
 
 Sync is two-way. Pull: each sync `FetchChanges` from the remote and applies upserts/deletes to the local store. Push: local create/update/delete on a synced Calendar enqueue an entry in the `sync_outbox` table (`upsert`/`delete`); each sync drains the outbox before pulling, calling `PushChange`/`DeleteRemote`. A create-push links the local Event to its newly assigned remote resource (`resource_url`) so the next fetch recognises it rather than re-importing a duplicate; the matching ETag also lets `applyChange` skip our own change when the remote echoes it back. Remote-originated writes use the non-enqueueing `…FromRemote` API helpers so they are never echoed back to the server.
 
@@ -198,15 +198,18 @@ The atomicity guarantee is the primary motivation: the Sync Engine builds one Ev
 
 ## Import Dialog
 
-The UI shown when a user opens a `.ics` file via double-click (file association registered in `setup.iss`). Displays:
+The in-app UI for importing a `.ics` file, launched from the Settings **Import** tab (a thin launcher that calls `ui.ShowImportDialog`). Implemented in two phases so a preview is shown before any write: `icsimport.Parse(r)` returns a `Preview` (no DB writes); `icsimport.Commit(preview, calendarID)` writes the events. Displays:
 
-- Full source file path (non-truncated, selectable)
 - PRODID / organizer from the ICS header
 - Event count and date span ("47 events, Jan 2025 – Dec 2025")
 - Scrollable preview list (title + start date per event)
 - Calendar picker (defaults to Local calendar)
 
-Safeguards: 10MB file size limit (rejected before parsing); warning banner for imports over 50 events; duplicate detection against the target calendar (matching UID or title + start timestamp) — duplicates are skipped and summarised in a post-import report ("3 events skipped — already exist"). No URLs or alarm actions embedded in the ICS are auto-executed. Escape closes the dialog without importing; Enter does not confirm.
+Safeguards: 10MB file size limit (rejected before parsing); warning banner for imports over 50 events; **deduplication** against the target calendar — identity is the iCal **UID**, falling back to **(title, start timestamp)** when the UID is absent, always scoped to the chosen calendar (the same event in a different Calendar is not a duplicate). Duplicates are skipped and summarised in a post-import report ("Imported 44, 3 skipped (already exist)"). Imported events **carry no auto-reminder** — `reminder_ts` is left NULL unless the VEVENT has a parseable VALARM trigger — and store a real timezone (from DTSTART's TZID, else UTC), never the literal "import". No URLs or alarm actions embedded in the ICS are auto-executed. Escape closes the dialog without importing; Enter does not confirm.
+
+Dedup relies on the `uid` column added in **migration v6** (`internal/storage/storage.go`), with `idx_events_uid` for lookups.
+
+**Deferred:** `.ics` file association (double-click to open), positional-arg routing in `main.go`, and the single-instance mutex / named-pipe IPC are part of the later OAuth slice (ADR-0005), not the in-app dialog.
 
 **Do not say:** "import wizard", "ICS importer". Say: **Import Dialog**.
 
