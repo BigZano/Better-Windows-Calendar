@@ -44,7 +44,10 @@ func setupLogFile() *os.File {
 	if err != nil {
 		return nil
 	}
-	w := io.MultiWriter(os.Stderr, f)
+	// File first: in a -H windowsgui build os.Stderr is an invalid handle and its
+	// Write errors, which would short-circuit io.MultiWriter and skip everything
+	// after it. Writing the log file first guarantees it always lands.
+	w := io.MultiWriter(f, os.Stderr)
 	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	return f
 }
